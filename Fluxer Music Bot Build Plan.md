@@ -1,6 +1,6 @@
 # Fluxer Music Bot: Build Plan
 
-Oct 19, 2026 · @Nils
+Oct 19, 2026 · @Seidenschnabel
 
 Music bot with website for interaction, also controllable form chat.
 
