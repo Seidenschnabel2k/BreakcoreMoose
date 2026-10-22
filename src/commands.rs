@@ -2,7 +2,7 @@
 
 use tokio::sync::oneshot;
 
-use crate::core::{Enqueued, JoinError, PlayerMsg, Snapshot, describe};
+use crate::core::{Enqueued, JoinError, PlayerMsg, SeekTarget, Snapshot, describe};
 use crate::media::fmt_duration;
 use crate::media::ytdlp::Resolved;
 
@@ -12,7 +12,10 @@ pub enum Command {
     /// Add to the priority lane, ahead of the regular queue.
     PlayNext(String),
     Skip,
+    /// `None` when the time didn't parse.
+    Seek(Option<SeekTarget>),
     Queue,
+    Shuffle,
     Clear,
     /// Optional voice channel name, for when we can't see the caller's channel.
     Join(Option<String>),
@@ -31,7 +34,9 @@ pub fn parse(content: &str, prefix: &str) -> Option<Command> {
         "play" | "p" => Command::Play(arg?),
         "next" | "n" => Command::PlayNext(arg?),
         "skip" | "s" => Command::Skip,
+        "seek" => Command::Seek(arg.as_deref().and_then(parse_seek)),
         "queue" | "q" => Command::Queue,
+        "shuffle" => Command::Shuffle,
         "clear" => Command::Clear,
         "join" | "j" => Command::Join(arg),
         "leave" | "stop" | "disconnect" => Command::Leave,
@@ -40,12 +45,38 @@ pub fn parse(content: &str, prefix: &str) -> Option<Command> {
     })
 }
 
+/// `1:30`, `90`, `1:02:03` jump to that time; `+30` / `-1:00` move relative to now.
+pub fn parse_seek(arg: &str) -> Option<SeekTarget> {
+    let arg = arg.trim();
+    let (make, time): (fn(u64) -> SeekTarget, &str) = match arg.as_bytes().first()? {
+        b'+' => (SeekTarget::Forward, &arg[1..]),
+        b'-' => (SeekTarget::Back, &arg[1..]),
+        _ => (SeekTarget::To, arg),
+    };
+    let parts: Vec<&str> = time.split(':').collect();
+    if parts.len() > 3 || parts.iter().any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit())) {
+        return None;
+    }
+    let mut secs: u64 = 0;
+    for (i, part) in parts.iter().enumerate() {
+        let n: u64 = part.parse().ok()?;
+        // Minutes and seconds after the first field must be below 60.
+        if i > 0 && n >= 60 {
+            return None;
+        }
+        secs = secs.checked_mul(60)?.checked_add(n)?;
+    }
+    Some(make(secs))
+}
+
 pub fn help(prefix: &str) -> String {
     [
         format!("`{prefix}play <link or search>`: add a link (anything yt-dlp supports), a playlist, or a YouTube search"),
         format!("`{prefix}next <link or search>` (`{prefix}n`): add to the priority queue, played before the regular queue"),
         format!("`{prefix}skip`: play the next track"),
+        format!("`{prefix}seek <time>`: jump to a time (`1:30`, `90`) or move by `+30` / `-15`"),
         format!("`{prefix}queue`: show what's playing and coming up"),
+        format!("`{prefix}shuffle`: shuffle the queue (priority tracks stay first)"),
         format!("`{prefix}clear`: remove all upcoming tracks, priority ones too"),
         format!("`{prefix}join [channel]`: join your voice channel (or the one named)"),
         format!("`{prefix}leave`: stop, clear the queue and leave voice"),
@@ -106,7 +137,7 @@ pub fn queue(view: &Snapshot) -> String {
     let mut lines = Vec::new();
     match &view.now {
         Some(now) => {
-            let (track, elapsed) = (&now.track, now.started_at.elapsed().as_secs());
+            let (track, elapsed) = (&now.track, now.position_secs());
             let progress = match track.duration_secs {
                 Some(d) => format!("{} / {}", fmt_duration(elapsed), fmt_duration(d)),
                 None => fmt_duration(elapsed),
@@ -145,9 +176,24 @@ mod tests {
         assert_eq!(parse("!next some song", "!"), Some(Command::PlayNext("some song".into())));
         assert_eq!(parse("!q", "!"), Some(Command::Queue));
         assert_eq!(parse("!clear", "!"), Some(Command::Clear));
+        assert_eq!(parse("!shuffle", "!"), Some(Command::Shuffle));
         assert_eq!(parse("!join", "!"), Some(Command::Join(None)));
         assert_eq!(parse("!join Music Room", "!"), Some(Command::Join(Some("Music Room".into()))));
         assert_eq!(parse("!stop", "!"), Some(Command::Leave));
+    }
+
+    #[test]
+    fn parses_seek_times() {
+        assert_eq!(parse_seek("90"), Some(SeekTarget::To(90)));
+        assert_eq!(parse_seek("1:30"), Some(SeekTarget::To(90)));
+        assert_eq!(parse_seek("1:02:03"), Some(SeekTarget::To(3723)));
+        assert_eq!(parse_seek("+30"), Some(SeekTarget::Forward(30)));
+        assert_eq!(parse_seek("-1:00"), Some(SeekTarget::Back(60)));
+        for bad in ["", "abc", "1:60", "1::2", "+", "1:2:3:4", "1.5", "-x"] {
+            assert_eq!(parse_seek(bad), None, "{bad}");
+        }
+        assert_eq!(parse("!seek 2:00", "!"), Some(Command::Seek(Some(SeekTarget::To(120)))));
+        assert_eq!(parse("!seek nope", "!"), Some(Command::Seek(None)));
     }
 
     #[test]

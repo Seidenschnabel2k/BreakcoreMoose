@@ -196,7 +196,9 @@ pub struct AudioStream {
 impl AudioStream {
     /// yt-dlp downloads (stream URLs expire and are IP-bound, so ffmpeg never
     /// sees one) and ffmpeg decodes to 48 kHz stereo s16le.
-    pub fn open(config: &Config, url: &str) -> Result<Self> {
+    /// `start_secs` > 0 seeks: ffmpeg decodes and drops audio up to that
+    /// point, so a seek costs only the download up to it (a few seconds).
+    pub fn open(config: &Config, url: &str, start_secs: u64) -> Result<Self> {
         let mut ytdlp = Command::new(&config.ytdlp_path)
             .args(["-f", "bestaudio/best", "--no-playlist", "--quiet", "--no-warnings"])
             // yt-dlp's own HLS downloader (SoundCloud, Twitch, …) writes `--FragN`
@@ -214,7 +216,8 @@ impl AudioStream {
 
         let ytdlp_out: Stdio = ytdlp.stdout.take().context("yt-dlp: no stdout")?.try_into()?;
         let mut ffmpeg = Command::new(&config.ffmpeg_path)
-            .args(["-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-vn"])
+            .args(["-hide_banner", "-loglevel", "error"])
+            .args(["-ss", &start_secs.to_string(), "-i", "pipe:0", "-vn"])
             .args(["-filter:a", &format!("volume={}", f32::from(config.volume) / 100.0)])
             .args(["-f", "s16le", "-ar", &SAMPLE_RATE.to_string(), "-ac", &CHANNELS.to_string()])
             .arg("pipe:1")
@@ -349,7 +352,7 @@ mod tests {
         let r = resolve(&config, Source::Search("rick astley never gonna give you up".into()), "t").await.unwrap();
         assert_eq!(r.tracks.len(), 1);
 
-        let mut audio = AudioStream::open(&config, &r.tracks[0].url).unwrap();
+        let mut audio = AudioStream::open(&config, &r.tracks[0].url, 60).unwrap();
         let mut second = vec![0u8; 48_000 * 2 * 2];
         tokio::time::timeout(Duration::from_secs(30), audio.pcm.read_exact(&mut second))
             .await

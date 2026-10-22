@@ -42,6 +42,11 @@ pub enum PlayerMsg {
         reply: oneshot::Sender<Result<String, JoinError>>,
     },
     Skip { reply: oneshot::Sender<Option<Track>> },
+    /// Restarts the current track at another position. Replies with the
+    /// track title and the new position in seconds.
+    Seek { target: SeekTarget, reply: oneshot::Sender<Result<(String, u64), String>> },
+    /// Shuffles the regular queue; replies how many tracks were shuffled.
+    Shuffle { reply: oneshot::Sender<usize> },
     /// Empties both lanes of the queue; the current track keeps playing.
     Clear { reply: oneshot::Sender<usize> },
     Queue { reply: oneshot::Sender<Snapshot> },
@@ -51,7 +56,26 @@ pub enum PlayerMsg {
     SetMusicChannel { channel_id: String },
     /// The bot's own voice state changed on the gateway.
     BotVoiceState { channel_id: Option<String> },
-    TrackEnded { generation: u64, error: Option<String> },
+    /// A playback run finished. `run` changes on every seek, so a run
+    /// replaced by a seek can't end the track.
+    TrackEnded { run: u64, error: Option<String> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeekTarget {
+    To(u64),
+    Forward(u64),
+    Back(u64),
+}
+
+impl SeekTarget {
+    fn resolve(self, position: u64) -> u64 {
+        match self {
+            SeekTarget::To(s) => s,
+            SeekTarget::Forward(s) => position.saturating_add(s),
+            SeekTarget::Back(s) => position.saturating_sub(s),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -88,7 +112,15 @@ pub struct NowPlaying {
     pub track: Track,
     /// Unique per play, so replaying the same song counts as a new track.
     pub generation: u64,
+    /// Where in the track the current run started (non-zero after a seek).
+    pub offset_secs: u64,
     pub started_at: Instant,
+}
+
+impl NowPlaying {
+    pub fn position_secs(&self) -> u64 {
+        self.offset_secs + self.started_at.elapsed().as_secs()
+    }
 }
 
 struct Voice {
@@ -100,8 +132,16 @@ struct Voice {
 struct Playing {
     track: Track,
     generation: u64,
+    run: u64,
+    offset_secs: u64,
     started_at: Instant,
     task: JoinHandle<()>,
+}
+
+impl Playing {
+    fn position_secs(&self) -> u64 {
+        self.offset_secs + self.started_at.elapsed().as_secs()
+    }
 }
 
 struct GuildPlayer {
@@ -117,6 +157,7 @@ struct GuildPlayer {
     music_channel: Option<String>,
     snapshot: watch::Sender<Snapshot>,
     generation: u64,
+    runs: u64,
     idle_deadline: Option<Instant>,
 }
 
@@ -134,6 +175,7 @@ pub fn spawn(guild_id: String, config: Arc<Config>, http: Arc<Http>) -> mpsc::Se
         music_channel: None,
         snapshot: watch::Sender::new(Snapshot::default()),
         generation: 0,
+        runs: 0,
         idle_deadline: None,
     };
     tokio::spawn(player.run(rx));
@@ -180,8 +222,14 @@ impl GuildPlayer {
                 }
                 let _ = reply.send(skipped);
             }
+            PlayerMsg::Seek { target, reply } => {
+                let _ = reply.send(self.seek(target));
+            }
             PlayerMsg::Clear { reply } => {
                 let _ = reply.send(self.queue.clear());
+            }
+            PlayerMsg::Shuffle { reply } => {
+                let _ = reply.send(self.queue.shuffle());
             }
             PlayerMsg::Queue { reply } => {
                 let _ = reply.send(self.view());
@@ -218,9 +266,9 @@ impl GuildPlayer {
                 self.leave().await;
                 self.say("I was disconnected from voice. The queue is kept; use `!join` to continue.").await;
             }
-            PlayerMsg::TrackEnded { generation, error } => {
+            PlayerMsg::TrackEnded { run, error } => {
                 let Some(playing) = &self.current else { return };
-                if playing.generation != generation {
+                if playing.run != run {
                     return;
                 }
                 let track = self.current.take().unwrap().track;
@@ -287,21 +335,50 @@ impl GuildPlayer {
             return;
         };
 
+        let transport = voice.transport.clone();
         self.generation += 1;
         let generation = self.generation;
-        let task = tokio::spawn(play(
-            self.config.clone(),
-            voice.transport.clone(),
-            track.url.clone(),
-            generation,
-            self.tx.clone(),
-        ));
+        let (run, task) = self.spawn_run(transport, &track.url, 0);
         // The music channel's panel already shows what's playing.
         if announce && self.music_channel.is_none() {
             self.say(&format!("Now playing {}", describe(&track))).await;
         }
-        self.current = Some(Playing { track, generation, started_at: Instant::now(), task });
+        self.current = Some(Playing { track, generation, run, offset_secs: 0, started_at: Instant::now(), task });
         self.idle_deadline = None;
+    }
+
+    fn spawn_run(&mut self, transport: Arc<dyn VoiceTransport>, url: &str, offset_secs: u64) -> (u64, JoinHandle<()>) {
+        self.runs += 1;
+        let run = self.runs;
+        let task = tokio::spawn(play(self.config.clone(), transport, url.to_string(), offset_secs, run, self.tx.clone()));
+        (run, task)
+    }
+
+    /// Restarts the current track's pipeline at the new position. Same track,
+    /// same `generation`, so the panel edits rather than reposts.
+    fn seek(&mut self, target: SeekTarget) -> Result<(String, u64), String> {
+        let Some(voice) = &self.voice else { return Err("Nothing is playing.".into()) };
+        let transport = voice.transport.clone();
+        let Some(playing) = &self.current else { return Err("Nothing is playing.".into()) };
+
+        let position = target.resolve(playing.position_secs());
+        if let Some(duration) = playing.track.duration_secs
+            && position >= duration
+        {
+            return Err(format!("That's past the end of the track ({}).", fmt_duration(duration)));
+        }
+
+        let url = playing.track.url.clone();
+        let (run, task) = self.spawn_run(transport.clone(), &url, position);
+        let playing = self.current.as_mut().expect("checked above");
+        // Abort first, then clear, so no frame from the old run sneaks in.
+        playing.task.abort();
+        transport.clear_buffer();
+        playing.task = task;
+        playing.run = run;
+        playing.offset_secs = position;
+        playing.started_at = Instant::now();
+        Ok((playing.track.title.clone(), position))
     }
 
     /// Stops the current track at once: aborting the task drops yt-dlp and ffmpeg.
@@ -328,6 +405,7 @@ impl GuildPlayer {
             now: self.current.as_ref().map(|p| NowPlaying {
                 track: p.track.clone(),
                 generation: p.generation,
+                offset_secs: p.offset_secs,
                 started_at: p.started_at,
             }),
             upcoming: self.queue.iter().take(QUEUE_PAGE).cloned().collect(),
@@ -363,15 +441,16 @@ async fn play(
     config: Arc<Config>,
     transport: Arc<dyn VoiceTransport>,
     url: String,
-    generation: u64,
+    offset_secs: u64,
+    run: u64,
     tx: mpsc::Sender<PlayerMsg>,
 ) {
-    let error = stream(&config, transport.as_ref(), &url).await.err();
-    let _ = tx.send(PlayerMsg::TrackEnded { generation, error }).await;
+    let error = stream(&config, transport.as_ref(), &url, offset_secs).await.err();
+    let _ = tx.send(PlayerMsg::TrackEnded { run, error }).await;
 }
 
-async fn stream(config: &Config, transport: &dyn VoiceTransport, url: &str) -> Result<(), String> {
-    let mut audio = AudioStream::open(config, url).map_err(|e| e.to_string())?;
+async fn stream(config: &Config, transport: &dyn VoiceTransport, url: &str, offset_secs: u64) -> Result<(), String> {
+    let mut audio = AudioStream::open(config, url, offset_secs).map_err(|e| e.to_string())?;
     let mut bytes = vec![0u8; FRAME_SAMPLES * 2];
     let mut samples = vec![0i16; FRAME_SAMPLES];
     let mut frames = 0u64;

@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn playing_panel_lists_queue() {
         let snapshot = Snapshot {
-            now: Some(NowPlaying { track: track("Song"), generation: 1, started_at: Instant::now() }),
+            now: Some(NowPlaying { track: track("Song"), generation: 1, offset_secs: 0, started_at: Instant::now() }),
             upcoming: (1..=10).map(|i| track(&format!("Next {i}"))).collect(),
             upcoming_total: 12,
             upcoming_priority: 1,

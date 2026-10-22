@@ -4,7 +4,7 @@
 mod player;
 mod queue;
 
-pub use player::{Enqueued, JoinError, PlayerMsg, Snapshot, describe};
+pub use player::{Enqueued, JoinError, PlayerMsg, SeekTarget, Snapshot, describe};
 #[cfg(test)]
 pub use player::NowPlaying;
 

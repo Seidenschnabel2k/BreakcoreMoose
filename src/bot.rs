@@ -11,7 +11,7 @@ use crate::commands::{self, Command, ask};
 use crate::config::Config;
 use crate::core::{PlayerMsg, Players};
 use crate::media::source;
-use crate::media::ytdlp;
+use crate::media::{fmt_duration, ytdlp};
 use crate::music_channel;
 
 /// Fluxer's voice channel type.
@@ -69,6 +69,28 @@ impl Handler {
                 match ask(&player, |reply| PlayerMsg::Skip { reply }).await.flatten() {
                     Some(track) => format!("Skipped **{}**.", track.title),
                     None => "Nothing is playing.".into(),
+                }
+            }
+            Command::Shuffle => {
+                let Some(player) = self.players.existing(guild_id).await else {
+                    return "The queue is empty.".into();
+                };
+                match ask(&player, |reply| PlayerMsg::Shuffle { reply }).await.unwrap_or(0) {
+                    0 | 1 => "Not enough tracks in the queue to shuffle.".into(),
+                    n => format!("Shuffled {n} tracks."),
+                }
+            }
+            Command::Seek(None) => {
+                format!("Usage: `{prefix}seek 1:30` to jump to a time, or `{prefix}seek +30` / `{prefix}seek -15` to move.")
+            }
+            Command::Seek(Some(target)) => {
+                let Some(player) = self.players.existing(guild_id).await else {
+                    return "Nothing is playing.".into();
+                };
+                match ask(&player, |reply| PlayerMsg::Seek { target, reply }).await {
+                    Some(Ok((title, position))) => format!("Jumped to {} in **{title}**.", fmt_duration(position)),
+                    Some(Err(e)) => e,
+                    None => "The player stopped unexpectedly.".into(),
                 }
             }
             Command::Clear => {

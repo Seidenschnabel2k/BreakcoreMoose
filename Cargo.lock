@@ -161,6 +161,7 @@ dependencies = [
  "livekit-api",
  "livekit-datatrack",
  "livekit-protocol",
+ "rand 0.10.3",
  "reqwest 0.13.5",
  "serde",
  "serde_json",
