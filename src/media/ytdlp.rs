@@ -106,7 +106,10 @@ impl Info {
 }
 
 /// Turns a link or search text into tracks. Fetches metadata only.
-pub async fn resolve(config: &Config, source: Source, requested_by: &str) -> Result<Resolved> {
+/// `playlist_skip` drops that many entries from the start of a playlist
+/// (counted as the playlist shows them, unavailable ones included); single
+/// videos ignore it.
+pub async fn resolve(config: &Config, source: Source, playlist_skip: usize, requested_by: &str) -> Result<Resolved> {
     let (target, is_search) = match source {
         Source::Url(url) => {
             super::source::ensure_public(&url).await?;
@@ -115,11 +118,16 @@ pub async fn resolve(config: &Config, source: Source, requested_by: &str) -> Res
         Source::Search(q) => (format!("ytsearch{SEARCH_RESULTS}:{q}"), true),
     };
 
+    let mut command = Command::new(&config.ytdlp_path);
+    // --no-playlist: a watch link with &list= (or a mix) adds just that video.
+    command.args(["-J", "--flat-playlist", "--no-playlist", "--no-warnings"]);
+    if playlist_skip > 0 && !is_search {
+        command.args(["--playlist-items", &format!("{}:", playlist_skip + 1)]);
+    }
     let output = tokio::time::timeout(
         RESOLVE_TIMEOUT,
-        Command::new(&config.ytdlp_path)
-            // --no-playlist: a watch link with &list= (or a mix) adds just that video.
-            .args(["-J", "--flat-playlist", "--no-playlist", "--no-warnings", "--", &target])
+        command
+            .args(["--", &target])
             .stdin(Stdio::null())
             .kill_on_drop(true)
             .output(),
@@ -349,8 +357,16 @@ mod tests {
         use tokio::io::AsyncReadExt;
         let config = config();
 
-        let r = resolve(&config, Source::Search("rick astley never gonna give you up".into()), "t").await.unwrap();
+        let r = resolve(&config, Source::Search("rick astley never gonna give you up".into()), 0, "t").await.unwrap();
         assert_eq!(r.tracks.len(), 1);
+
+        let playlist = || Source::Url("https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI".into());
+        let config = Config { playlist_limit: 500, ..config };
+        let full = resolve(&config, playlist(), 0, "t").await.unwrap();
+        let skipped = resolve(&config, playlist(), 10, "t").await.unwrap();
+        assert!(full.tracks.len() > 20);
+        assert!(full.tracks.iter().any(|t| t.url == skipped.tracks[0].url), "skipped list starts inside the playlist");
+        assert!(!full.tracks[..5].iter().any(|t| t.url == skipped.tracks[0].url), "first tracks were skipped");
 
         let mut audio = AudioStream::open(&config, &r.tracks[0].url, 60).unwrap();
         let mut second = vec![0u8; 48_000 * 2 * 2];

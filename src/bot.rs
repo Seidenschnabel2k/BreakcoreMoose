@@ -134,17 +134,21 @@ impl Handler {
         query: &str,
         priority: bool,
     ) -> String {
+        let (query, playlist_skip) = commands::split_playlist_skip(query);
         let source = source::classify(query);
         let _ = ctx.http.trigger_typing(channel_id).await;
 
         let requested_by = msg.member.as_ref().map(|m| m.display_name()).filter(|n| !n.is_empty());
         let requested_by = requested_by.unwrap_or(&msg.author.username);
-        let resolved = match ytdlp::resolve(&self.config, source, requested_by).await {
+        let resolved = match ytdlp::resolve(&self.config, source, playlist_skip, requested_by).await {
             Ok(r) => r,
             Err(e) => return format!("Couldn't load that: {e}"),
         };
         if resolved.tracks.is_empty() {
             return match resolved.playlist_title {
+                Some(title) if playlist_skip > 0 => {
+                    format!("**{title}** has nothing playable after skipping the first {playlist_skip} tracks.")
+                }
                 Some(title) => format!("Nothing playable in **{title}**."),
                 None if resolved.skipped > 0 => "That video is live, private or too long.".into(),
                 None => "No results.".into(),
@@ -163,7 +167,7 @@ impl Handler {
         })
         .await;
         match reply {
-            Some(Ok(outcome)) => commands::enqueued(&resolved, &outcome, priority),
+            Some(Ok(outcome)) => commands::enqueued(&resolved, &outcome, priority, playlist_skip),
             Some(Err(e)) => commands::join_error(&e, &self.config.prefix),
             None => "The player stopped unexpectedly.".into(),
         }

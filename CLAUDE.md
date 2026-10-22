@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-`Fluxer Music Bot Build Plan.md` is the source of truth for scope, architecture and decisions. Built so far is the first slice: playback of anything yt-dlp supports (single tracks, playlists, YouTube search) with `play`, `next` (priority queue), `skip`, `seek` (restarts the pipe with ffmpeg `-ss`; a per-run id keeps the panel's track `generation` unchanged), `queue`, `shuffle` (regular lane only), `clear`, `join`, `leave`, `help`, plus a music channel (`MUSIC_CHANNEL_ID`). Nothing is persisted yet (no SQLite), and there is no Spotify support or dashboard. License: GPL-2.0.
+`Fluxer Music Bot Build Plan.md` is the source of truth for scope, architecture and decisions. Built so far is the first slice: playback of anything yt-dlp supports (single tracks, playlists, YouTube search) with `play` (a number after a playlist link skips that many tracks, via yt-dlp `--playlist-items`), `next` (priority queue), `skip`, `seek` (restarts the pipe with ffmpeg `-ss`; a per-run id keeps the panel's track `generation` unchanged), `queue`, `shuffle` (regular lane only), `clear`, `join`, `leave`, `help`, plus a music channel (`MUSIC_CHANNEL_ID`). Nothing is persisted yet (no SQLite), and there is no Spotify support or dashboard. License: GPL-2.0.
 
 ## Commands
 

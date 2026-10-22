@@ -4,6 +4,7 @@ use tokio::sync::oneshot;
 
 use crate::core::{Enqueued, JoinError, PlayerMsg, SeekTarget, Snapshot, describe};
 use crate::media::fmt_duration;
+use crate::media::source::{self, Source};
 use crate::media::ytdlp::Resolved;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -45,6 +46,19 @@ pub fn parse(content: &str, prefix: &str) -> Option<Command> {
     })
 }
 
+/// `<link> 10` means "this playlist, minus its first 10 tracks". Only after a
+/// link: in search text a trailing number is part of the search.
+pub fn split_playlist_skip(query: &str) -> (&str, usize) {
+    let query = query.trim();
+    if let Some((rest, last)) = query.rsplit_once(char::is_whitespace)
+        && let Ok(n) = last.parse::<usize>()
+        && matches!(source::classify(rest), Source::Url(_))
+    {
+        return (rest.trim_end(), n);
+    }
+    (query, 0)
+}
+
 /// `1:30`, `90`, `1:02:03` jump to that time; `+30` / `-1:00` move relative to now.
 pub fn parse_seek(arg: &str) -> Option<SeekTarget> {
     let arg = arg.trim();
@@ -72,6 +86,7 @@ pub fn parse_seek(arg: &str) -> Option<SeekTarget> {
 pub fn help(prefix: &str) -> String {
     [
         format!("`{prefix}play <link or search>`: add a link (anything yt-dlp supports), a playlist, or a YouTube search"),
+        format!("`{prefix}play <playlist link> 10`: add the playlist without its first 10 tracks (works with `{prefix}next` too)"),
         format!("`{prefix}next <link or search>` (`{prefix}n`): add to the priority queue, played before the regular queue"),
         format!("`{prefix}skip`: play the next track"),
         format!("`{prefix}seek <time>`: jump to a time (`1:30`, `90`) or move by `+30` / `-15`"),
@@ -104,7 +119,7 @@ pub fn join_error(e: &JoinError, prefix: &str) -> String {
     }
 }
 
-pub fn enqueued(resolved: &Resolved, outcome: &Enqueued, priority: bool) -> String {
+pub fn enqueued(resolved: &Resolved, outcome: &Enqueued, priority: bool, playlist_skip: usize) -> String {
     let lane = if priority { " to the priority queue" } else { "" };
     let mut text = match (&resolved.playlist_title, resolved.tracks.as_slice()) {
         (Some(title), _) => format!("Added {} tracks from **{title}**{lane}", outcome.count),
@@ -112,8 +127,14 @@ pub fn enqueued(resolved: &Resolved, outcome: &Enqueued, priority: bool) -> Stri
         (None, [track]) => format!("Added {}{lane} at position {}", describe(track), outcome.position),
         (None, _) => format!("Added {} tracks{lane}", outcome.count),
     };
+    if resolved.playlist_title.is_none() && playlist_skip > 0 {
+        text.push_str(" (the number only applies to playlists)");
+    }
     if resolved.playlist_title.is_some() {
         let mut notes = Vec::new();
+        if playlist_skip > 0 {
+            notes.push(format!("skipped the first {playlist_skip}"));
+        }
         if resolved.skipped > 0 {
             notes.push(format!("{} unavailable", resolved.skipped));
         }
@@ -180,6 +201,17 @@ mod tests {
         assert_eq!(parse("!join", "!"), Some(Command::Join(None)));
         assert_eq!(parse("!join Music Room", "!"), Some(Command::Join(Some("Music Room".into()))));
         assert_eq!(parse("!stop", "!"), Some(Command::Leave));
+    }
+
+    #[test]
+    fn playlist_skip_only_after_links() {
+        let pl = "https://www.youtube.com/playlist?list=PL123";
+        assert_eq!(split_playlist_skip(&format!("{pl} 10")), (pl, 10));
+        assert_eq!(split_playlist_skip(&format!("  {pl}   3 ")), (pl, 3));
+        assert_eq!(split_playlist_skip(pl), (pl, 0));
+        assert_eq!(split_playlist_skip("track 2"), ("track 2", 0));
+        assert_eq!(split_playlist_skip("blink 182"), ("blink 182", 0));
+        assert_eq!(split_playlist_skip(&format!("{pl} ten")), (format!("{pl} ten").as_str(), 0));
     }
 
     #[test]
