@@ -198,7 +198,13 @@ impl AudioStream {
     /// sees one) and ffmpeg decodes to 48 kHz stereo s16le.
     pub fn open(config: &Config, url: &str) -> Result<Self> {
         let mut ytdlp = Command::new(&config.ytdlp_path)
-            .args(["-f", "bestaudio/best", "--no-playlist", "--quiet", "--no-warnings", "-o", "-", "--", url])
+            .args(["-f", "bestaudio/best", "--no-playlist", "--quiet", "--no-warnings"])
+            // yt-dlp's own HLS downloader (SoundCloud, Twitch, …) writes `--FragN`
+            // files to the working directory even when streaming to stdout;
+            // ffmpeg streams HLS without touching disk.
+            .args(["--downloader", "m3u8:ffmpeg", "-o", "-", "--", url])
+            // Anything another downloader still writes lands here, not in the repo.
+            .current_dir(std::env::temp_dir())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
