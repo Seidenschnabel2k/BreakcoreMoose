@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-`Fluxer Music Bot Build Plan.md` is the source of truth for scope, architecture and decisions. Built so far is the first slice: YouTube playback via yt-dlp (single videos, playlists, search) with `play`, `next` (priority queue), `skip`, `queue`, `clear`, `join`, `leave`, `help`, plus a music channel (`MUSIC_CHANNEL_ID`). Nothing is persisted yet (no SQLite), and there is no Spotify support or dashboard. License: GPL-2.0.
+`Fluxer Music Bot Build Plan.md` is the source of truth for scope, architecture and decisions. Built so far is the first slice: playback of anything yt-dlp supports (single tracks, playlists, YouTube search) with `play`, `next` (priority queue), `skip`, `queue`, `clear`, `join`, `leave`, `help`, plus a music channel (`MUSIC_CHANNEL_ID`). Nothing is persisted yet (no SQLite), and there is no Spotify support or dashboard. License: GPL-2.0.
 
 ## Commands
 
@@ -26,7 +26,7 @@ Runtime needs `yt-dlp`, `ffmpeg` and `deno` on PATH. Settings are environment va
 - `bot.rs` is the fluxer-rust `EventHandler`. It parses chat, resolves tracks and talks to the player. It also tracks user voice channels from `VOICE_STATE_UPDATE`.
 - `core/player.rs` is one `GuildPlayer` task per server. It owns the queue (`core/queue.rs`, whose priority lane, filled by `!next`, plays out before the regular lane), the voice connection and playback. All replies come back over oneshot channels.
 - `music_channel.rs` runs a panel task per music channel. It watches the player's `Snapshot` (a `watch` channel, published after every player message) and edits one embed. When the track changes (a new `generation`), it deletes the old embed and posts a new one. It also deletes every message in the channel on startup. In the music channel, `bot.rs` deletes every message that isn't the bot's own, treats unprefixed text as `play`, and posts replies that delete themselves after 10 s.
-- `media/` decides what an input is (`source.rs`, YouTube hosts only), fetches metadata (`ytdlp::resolve`) and runs the PCM pipe (`ytdlp::AudioStream`).
+- `media/` decides what an input is (`source.rs`: any http(s) link goes to yt-dlp, anything else is a YouTube search, and links that resolve to loopback, private or link-local addresses are refused, because yt-dlp's generic extractor would fetch them), fetches metadata (`ytdlp::resolve`) and runs the PCM pipe (`ytdlp::AudioStream`).
 - `voice/` holds the `VoiceTransport` trait and its LiveKit implementation.
 - The `core` module name shadows the built-in `core` crate, so refer to it as `crate::core`.
 

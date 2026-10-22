@@ -42,7 +42,7 @@ pub fn parse(content: &str, prefix: &str) -> Option<Command> {
 
 pub fn help(prefix: &str) -> String {
     [
-        format!("`{prefix}play <link or search>`: add a YouTube video, playlist or search result"),
+        format!("`{prefix}play <link or search>`: add a link (anything yt-dlp supports), a playlist, or a YouTube search"),
         format!("`{prefix}next <link or search>` (`{prefix}n`): add to the priority queue, played before the regular queue"),
         format!("`{prefix}skip`: play the next track"),
         format!("`{prefix}queue`: show what's playing and coming up"),

@@ -39,11 +39,26 @@ struct Info {
     webpage_url: Option<String>,
     duration: Option<f64>,
     live_status: Option<String>,
+    thumbnail: Option<String>,
+    #[serde(default)]
+    thumbnails: Vec<Thumbnail>,
+    /// Extractor name; `ie_key` on flat playlist entries.
+    #[serde(alias = "ie_key")]
+    extractor_key: Option<String>,
     #[serde(default)]
     entries: Vec<Info>,
 }
 
+#[derive(Debug, Deserialize)]
+struct Thumbnail {
+    url: String,
+}
+
 impl Info {
+    fn is_youtube(&self) -> bool {
+        self.extractor_key.as_deref().is_some_and(|k| k.starts_with("Youtube"))
+    }
+
     fn is_live(&self) -> bool {
         matches!(self.live_status.as_deref(), Some("is_live" | "is_upcoming"))
     }
@@ -60,13 +75,28 @@ impl Info {
         self.webpage_url
             .clone()
             .or_else(|| self.url.clone().filter(|u| u.starts_with("http")))
-            .or_else(|| self.id.as_ref().map(|id| format!("https://www.youtube.com/watch?v={id}")))
+            .or_else(|| {
+                // Flat YouTube entries sometimes carry only the id.
+                let id = self.id.as_ref().filter(|_| self.is_youtube())?;
+                Some(format!("https://www.youtube.com/watch?v={id}"))
+            })
+    }
+
+    fn thumbnail_url(&self) -> Option<String> {
+        self.thumbnail
+            .clone()
+            // yt-dlp sorts thumbnails worst to best.
+            .or_else(|| self.thumbnails.last().map(|t| t.url.clone()))
+            .or_else(|| {
+                let id = self.id.as_ref().filter(|_| self.is_youtube())?;
+                Some(format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"))
+            })
     }
 
     fn into_track(self, requested_by: &str) -> Option<Track> {
         let url = self.watch_url()?;
         Some(Track {
-            thumbnail: self.id.as_ref().map(|id| format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg")),
+            thumbnail: self.thumbnail_url(),
             duration_secs: self.duration_secs(),
             title: self.title.unwrap_or_else(|| url.clone()),
             url,
@@ -78,9 +108,11 @@ impl Info {
 /// Turns a link or search text into tracks. Fetches metadata only.
 pub async fn resolve(config: &Config, source: Source, requested_by: &str) -> Result<Resolved> {
     let (target, is_search) = match source {
-        Source::YouTube(url) => (url, false),
+        Source::Url(url) => {
+            super::source::ensure_public(&url).await?;
+            (url, false)
+        }
         Source::Search(q) => (format!("ytsearch{SEARCH_RESULTS}:{q}"), true),
-        Source::Unsupported => bail!("only YouTube links are supported"),
     };
 
     let output = tokio::time::timeout(
@@ -252,18 +284,40 @@ mod tests {
     #[test]
     fn playlist_drops_unavailable_and_caps() {
         let info = parse(r#"{"_type":"playlist","title":"Mix","entries":[
-            {"id":"a","title":"One","duration":100},
+            {"id":"a","title":"One","duration":100,"ie_key":"Youtube"},
             {"id":"b","title":"[Private video]"},
             {"id":"c","title":"Two","duration":99999},
-            {"id":"d","title":"Three","duration":100},
-            {"id":"e","title":"Four","duration":100}
+            {"id":"d","title":"Three","duration":100,"ie_key":"Youtube"},
+            {"id":"e","title":"Four","duration":100,"ie_key":"Youtube"}
         ]}"#);
         let r = from_info(info, false, "nils", &config());
         assert_eq!(r.playlist_title.as_deref(), Some("Mix"));
         let titles: Vec<_> = r.tracks.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(titles, ["One", "Three"]);
         assert_eq!(r.tracks[0].url, "https://www.youtube.com/watch?v=a");
+        assert_eq!(r.tracks[0].thumbnail.as_deref(), Some("https://i.ytimg.com/vi/a/hqdefault.jpg"));
         assert_eq!((r.skipped, r.truncated), (2, 1));
+    }
+
+    #[test]
+    fn other_sites() {
+        // A single SoundCloud track: `url` is the raw stream, `webpage_url` the page.
+        let track = parse(r#"{"_type":"video","id":"293","webpage_url":"https://soundcloud.com/forss/flickermood",
+            "url":"https://playback.example/x.m3u8","title":"Flickermood","duration":213.9,
+            "thumbnail":"https://i1.sndcdn.com/a.jpg","extractor_key":"Soundcloud"}"#);
+        let r = from_info(track, false, "nils", &config());
+        assert_eq!(r.tracks[0].url, "https://soundcloud.com/forss/flickermood");
+        assert_eq!(r.tracks[0].thumbnail.as_deref(), Some("https://i1.sndcdn.com/a.jpg"));
+
+        // Flat SoundCloud set entries have a page URL but no title, and no YouTube fallbacks.
+        let set = parse(r#"{"_type":"playlist","title":"Soulhack","entries":[
+            {"_type":"url_transparent","id":"290","url":"https://soundcloud.com/forss/city-ports","ie_key":"Soundcloud"},
+            {"_type":"url","id":"291","ie_key":"Soundcloud"}
+        ]}"#);
+        let r = from_info(set, false, "nils", &config());
+        assert_eq!(r.tracks.len(), 1);
+        assert_eq!(r.tracks[0].title, "https://soundcloud.com/forss/city-ports");
+        assert_eq!(r.tracks[0].thumbnail, None);
     }
 
     #[test]

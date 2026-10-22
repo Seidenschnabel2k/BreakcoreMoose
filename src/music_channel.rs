@@ -152,7 +152,7 @@ pub fn render(s: &Snapshot, prefix: &str) -> Embed {
     };
 
     let Some(now) = &s.now else {
-        let mut description = String::from("Nothing is playing.\n\nPost a YouTube link, a playlist or a search here to start.");
+        let mut description = String::from("Nothing is playing.\n\nPost a link (YouTube, SoundCloud, Bandcamp, …), a playlist or a search here to start.");
         if s.upcoming_total > 0 {
             description.push_str(&format!("\n{} tracks are waiting; use `{prefix}join` to continue.", s.upcoming_total));
         }
@@ -235,7 +235,7 @@ mod tests {
     fn idle_panel() {
         let embed = render(&Snapshot::default(), "!");
         assert_eq!(embed.title.as_deref(), Some("Idle"));
-        assert!(embed.description.unwrap().contains("Post a YouTube link"));
+        assert!(embed.description.unwrap().contains("Post a link"));
     }
 
     #[test]

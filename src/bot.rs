@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 use crate::commands::{self, Command, ask};
 use crate::config::Config;
 use crate::core::{PlayerMsg, Players};
-use crate::media::source::{self, Source};
+use crate::media::source;
 use crate::media::ytdlp;
 use crate::music_channel;
 
@@ -113,9 +113,6 @@ impl Handler {
         priority: bool,
     ) -> String {
         let source = source::classify(query);
-        if source == Source::Unsupported {
-            return "Only YouTube links and search text are supported for now.".into();
-        }
         let _ = ctx.http.trigger_typing(channel_id).await;
 
         let requested_by = msg.member.as_ref().map(|m| m.display_name()).filter(|n| !n.is_empty());
