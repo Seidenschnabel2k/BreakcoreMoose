@@ -1,0 +1,28 @@
+[package]
+name = "breakcore-moose"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+publish = false
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+fluxer-rust = "0.2.1"
+# Must match fluxer-rust's livekit so only one native WebRTC is built. The
+# livekit sub-crates break each other across patch releases, so the whole
+# set is pinned to versions known to build together. Bump them together.
+livekit = { version = "=0.7.45", features = ["rustls-tls-native-roots"] }
+livekit-api = "=0.5.1"
+livekit-datatrack = "=0.1.8"
+livekit-protocol = "=0.7.8"
+libwebrtc = "=0.3.36"
+webrtc-sys = "=0.3.34"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+dotenvy = "0.15.7"

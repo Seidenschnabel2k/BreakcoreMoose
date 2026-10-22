@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Rust
+/target/
+*.db
+*.db-*
+.env
