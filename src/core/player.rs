@@ -16,7 +16,7 @@ use crate::music_channel;
 use crate::voice::{FRAME_SAMPLES, LiveKitTransport, VoiceTransport};
 
 /// Leave voice after this long with nothing playing.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// No PCM for this long while playing counts as a failed track.
 const STALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Our own leave/join produces voice state events; ignore them this soon after joining.
@@ -193,7 +193,7 @@ impl GuildPlayer {
                 },
                 _ = tokio::time::sleep_until(idle.unwrap_or_else(Instant::now)), if idle.is_some() => {
                     self.leave().await;
-                    self.say("Left voice after 5 minutes of silence.").await;
+                    self.say("Left voice after 60 minutes of silence.").await;
                 }
             }
             let _ = self.snapshot.send_replace(self.view());

@@ -1,6 +1,6 @@
 # Fluxer Music Bot: Build Plan
 
-Oct 19, 2026 · @Seidenschnabel
+Oct 19, 2026 · @Nils
 
 Music bot with website for interaction, also controllable form chat.
 
@@ -9,7 +9,7 @@ the bot cleans up after itself and commands from user.
 
 ## Summary
 
-Build one Python service that runs the Fluxer bot, the music player and the dashboard web server, so chat and web always edit the same queue. Start with the riskiest piece: getting a bot to play audio in a Fluxer voice channel.
+Build one Rust service that runs the Fluxer bot, the music player and the dashboard web server, so chat and web always edit the same queue. Start with the riskiest piece: getting a bot to play audio in a Fluxer voice channel.
 
 **What done looks like**
 
@@ -23,7 +23,7 @@ Build one Python service that runs the Fluxer bot, the music player and the dash
 
 **Setup** (from your answers under Decisions)
 
-- Python 3.14 on asyncio; the bot, the player and the web server share one process and one event loop.
+- Rust (current stable, edition 2024) on tokio, with the [fluxer-rust](https://crates.io/crates/fluxer-rust) crate. The bot, the player and the web server run as one binary.
 - Runs in Docker or a VM on your home network, against your own Fluxer instance. The bot reads base URLs from your instance's `/.well-known/fluxer` ([Fluxer API docs](https://docs.fluxer.app/)).
 - Everyone in a server can use every command and the dashboard; only binding the music channel needs Manage Server.
 - Playlists are links added to the queue; the bot keeps no saved playlists.
@@ -35,7 +35,7 @@ Chat commands and the web page are two front doors to the same per-server queue;
 
 &#91;embedded content: bot architecture · 11 parts\]
 
-Example, `!play <Spotify playlist>`: the command parses the link, the Spotify resolver returns tracks, and QueueService appends them under the server's lock and saves them. If the player is idle, it asks the matcher for a YouTube video, starts the audio pipeline and pushes frames to the voice transport. QueueService then sends a snapshot, so every open dashboard updates.
+Example, `!play <Spotify playlist>`: the command parses the link, the Spotify resolver returns tracks, and QueueService sends them to that server's task, which appends and saves them. If the player is idle, it asks the matcher for a YouTube video, starts the audio pipeline and pushes frames to the voice transport. QueueService then sends a snapshot, so every open dashboard updates.
 
 ## Voice and playback
 
@@ -43,38 +43,40 @@ Audio flows yt-dlp → ffmpeg → raw PCM → a LiveKit audio track, and all voi
 
 **How the bot joins voice today** ([Fluxer voice docs](https://docs.fluxer.app/voice/))
 
-1. Send a Voice State Update on the gateway with the server and channel id.
-2. Receive a Voice Server Update with a LiveKit `endpoint` and `token`. The grant lives 600 seconds.
-3. Connect with LiveKit's Python SDK ([`livekit`](https://pypi.org/project/livekit/), which lists Python 3.14 support) and publish one audio track.
+1. `ctx.join_voice(guild_id, channel_id)` in fluxer-rust sends the Voice State Update (opcode 4) and waits up to 10 seconds for the Voice Server Update with a LiveKit `endpoint` and `token` ([fluxer-rust `Context`](https://docs.rs/fluxer-rust/latest/fluxer/client/struct.Context.html)). The grant lives 600 seconds.
+2. It connects with the `livekit` crate and returns a `FluxerVoiceConnection` whose LiveKit `room` is public.
+3. The bot publishes its own audio track on that room, as described under the adapter below.
 
 **Pipeline for each track**
 
 1. `yt-dlp -f bestaudio -o -` writes the audio stream to stdout.
 2. `ffmpeg` reads it and outputs 48 kHz stereo 16-bit PCM.
-3. The player reads PCM in 20 ms frames from ffmpeg's stdout (asyncio subprocess), scales samples for volume, and awaits `AudioSource.capture_frame`.
+3. The player reads 20 ms frames (960 samples per channel) from ffmpeg's stdout with tokio, scales samples for volume, and pushes them with `NativeAudioSource::capture_frame`.
 4. LiveKit encodes Opus at the channel bitrate: 64 kbps by default, 96 kbps maximum without server boosts.
 
 Pipe yt-dlp into ffmpeg rather than giving ffmpeg a stream URL. YouTube URLs expire and are tied to the requesting IP, so letting yt-dlp download avoids most 403 errors. Seeking comes later, by restarting the pipeline at an offset.
 
 **The adapter: `VoiceTransport`**
 
-- `join(server_id, channel_id)`, `push_frame(pcm)`, `clear_buffer()`, `leave()`, plus `ready` and `disconnected` events.
-- First implementation: the `livekit` package directly, so the player controls every frame (volume, instant skip).
-- [fluxer.py](https://pypi.org/project/fluxer.py/) has a voice extra built on LiveKit and ffmpeg with a discord.py-style `play()`. Use it in Phase 0 to prove sound quickly, but don't make the player depend on it: the library is marked alpha.
+- A `VoiceTransport` trait with `join`, `push_frame`, `clear_buffer` and `leave`, plus ready and disconnected events.
+- fluxer-rust's own `play_music(path, ...)` takes only a file or URL, runs ffmpeg itself, and posts ffmpeg errors as a chat message ([source](https://docs.rs/fluxer-rust/latest/src/fluxer/voice/mod.rs.html)). That rules out the yt-dlp pipe, instant volume and a tidy music channel.
+- So the LiveKit implementation joins with `join_voice`, publishes its own `NativeAudioSource` track on the exposed `room`, and unpublishes the library's default track. Confirm in Phase 0 that listeners hear only the bot's track.
+- Depend on the same `livekit` version fluxer-rust uses (0.7.x today), so only one copy of the native WebRTC library is built.
+- Longer term, offer fluxer-rust a small pull request that exposes the audio source; the crate is Apache-2.0, so a fork is also fine.
 - You run your own Fluxer instance, so Fluxer's new voice system reaches you only when you upgrade. Hold that upgrade until a new `VoiceTransport` is ready and tested.
 
 **Reliability rules**
 
-- Skip and stop kill both child processes and clear the audio source's buffer, so buffered audio stops at once.
+- yt-dlp and ffmpeg are spawned with `kill_on_drop(true)`. Skip and stop drop both processes and clear the audio buffer, so audio stops at once and no process is left running.
 - Watchdog: no PCM for 10 seconds while playing restarts the pipeline once, then skips with a message.
-- On a voice disconnect, send a new Voice State Update for a fresh grant and continue the current track.
+- On a voice disconnect, call `join_voice` again for a fresh grant and continue the current track.
 - Leave after 5 minutes with an empty queue or nobody else in the channel.
 - Your instance needs voice enabled (`features.voice_enabled` in its discovery document), or every join is refused.
 - Encrypted voice channels: bots are exempt from the join refusal, but whether listeners hear the bot's audio is untested. Test it in Phase 0.
 
 ## Queue and commands
 
-`!play` always appends and starts playback only when the player is idle. Every change, from chat or the web page, runs through one lock per server, so two requests can never interleave and lose a track.
+`!play` always appends and starts playback only when the player is idle. Every change, from chat or the web page, goes through one tokio task per server that applies changes one at a time from a channel, so two requests can never interleave and lose a track.
 
 **Rules for `!play <search or link>`**
 
@@ -139,7 +141,7 @@ yt-dlp does both search and streaming, but it needs a JavaScript runtime and fre
 
 - yt-dlp updated daily; a stale yt-dlp is the most common cause of a broken music bot.
 - Deno and yt-dlp-ejs installed alongside it.
-- Run yt-dlp as its own process, not imported as a library, so a yt-dlp update or crash never takes the bot down.
+- Keep yt-dlp as a separate binary rather than a Rust port, so it can be updated daily without rebuilding the bot.
 - Your home network is a good place for this: YouTube blocks home addresses less often than VPS ones, so start without a proxy.
 - Optional: the bgutil PO-token provider plugin, which the existing Fluxer bot [Vinto](https://github.com/notgapriel/vinto-the-fluxer-bot) runs as a sidecar container.
 - Avoid cookies from your main Google account; if a video needs them, use a spare account.
@@ -166,7 +168,7 @@ Spotify supplies only the song name, artist and length; the audio always comes f
 2. Spotify's public embed page, for other people's public playlists. It is unofficial, can change without notice, and may not return very long playlists in full.
 3. If both fail, the reply says what failed instead of silently adding nothing.
 
-For the one-time login, register a loopback redirect such as `http://127.0.0.1:8888/callback` in your app; Spotify no longer accepts `localhost` ([redirect URI guide](https://developer.spotify.com/documentation/web-api/tutorials/migration-insecure-redirect-uri)). Call the API with httpx directly: the February 2026 renames broke playlist loading in older wrappers, for example in [Music Assistant](https://github.com/music-assistant/support/issues/5114).
+For the one-time login, register a loopback redirect such as `http://127.0.0.1:8888/callback` in your app; Spotify no longer accepts `localhost` ([redirect URI guide](https://developer.spotify.com/documentation/web-api/tutorials/migration-insecure-redirect-uri)). Call the API with reqwest directly rather than through a wrapper crate: the February 2026 renames broke playlist loading in older wrappers, for example in [Music Assistant](https://github.com/music-assistant/support/issues/5114).
 
 Accepted forms: `open.spotify.com/{track|album|playlist}/{id}`, links with an `/intl-xx/` prefix, `spotify:` URIs, and `spotify.link` short links (follow the redirect first).
 
@@ -246,43 +248,51 @@ On startup the bot loads all queues. Servers that were playing are rejoined and 
 
 ## Stack and layout
 
-One repository and one Python process, plus a small JavaScript front end built to static files that the same process serves.
+One Cargo project building one Rust binary, plus a small JavaScript front end built to static files that the binary serves.
 
 | Part | Choice | Why |
 | --- | --- | --- |
-| Language | Python 3.14 on asyncio, managed with uv | Your choice; the key libraries support it |
-| Fluxer gateway and REST | [fluxer.py](https://pypi.org/project/fluxer.py/) behind a thin adapter | Command framework, cogs, typed models; marked alpha, so wrapped |
-| Voice | [`livekit`](https://pypi.org/project/livekit/) behind `VoiceTransport` | Frame-level control, swappable later |
-| Media | yt-dlp, Deno, ffmpeg as asyncio subprocesses | Isolated, updated outside the code |
-| Spotify | httpx with a stored refresh token | Uses the 2026 endpoint names directly |
-| Web server | FastAPI on uvicorn, in the bot's event loop | WebSockets and pydantic validation built in |
+| Language | Rust stable, edition 2024, tokio runtime | Your choice |
+| Fluxer gateway and REST | [fluxer-rust](https://crates.io/crates/fluxer-rust) 0.2.x behind a thin adapter | Event handler, cache, voice join; a young crate, so wrapped |
+| Voice | `livekit` crate, same version as fluxer-rust, behind `VoiceTransport` | Frame-level control, swappable later |
+| Media | yt-dlp, Deno, ffmpeg via `tokio::process` | Updated outside the code |
+| Spotify | reqwest with a stored refresh token | Uses the 2026 endpoint names directly |
+| Web server | axum with its WebSocket support, tower-http for static files | Shares the bot's tokio runtime |
+| Dashboard login | `oauth2` crate with PKCE | Standard authorization code flow |
 | Front end | Svelte and SortableJS, built with Vite | Drag and drop with touch support |
-| Storage | SQLite with aiosqlite | One file, async access |
-| Logs | stdlib logging, JSON lines, rotating files | Readable on disk and in Docker |
+| Storage | SQLite with sqlx and its migrations | Checked queries, one file |
+| Messages and settings | serde; settings from environment variables | One typed source of truth |
+| Logs | tracing with JSON output, tracing-appender for rotating files | fluxer-rust's `log` output is captured too |
 | Deployment | Docker Compose on your home server: bot, optional PO-token sidecar | Sits behind your existing reverse proxy |
 
-fluxer.py lists support up to Python 3.13 and ships a pure-Python wheel, so it should install on 3.14; confirm that in Phase 0. If it falls behind your instance's API, [Interfluxer](https://pypi.org/project/interfluxer/) is the other maintained Python framework.
+fluxer-rust 0.2.1 came out on 9 September 2026, has one maintainer, and about a quarter of its API is documented ([docs.rs](https://docs.rs/fluxer-rust/latest/fluxer/)). Two checks belong in Phase 0:
+
+- Its README mentions only `.api_url()` for self-hosted instances. Confirm the gateway connection also goes to your instance, not fluxer.app.
+- For any gateway call it lacks, check whether the public `ctx.gateway_tx` sender is enough.
+
+Build on Debian-based images rather than Alpine, because the `livekit` crate links a native WebRTC library. fluxer-rust's voice also needs pkg-config, libglib2.0-dev and libva-dev on Debian. Use cargo-chef in the Dockerfile so dependencies are cached; the first build is slow.
 
 ```text
 fluxer-music/
-  pyproject.toml
-  src/fluxer_music/
-    __main__.py      start bot and web server in one event loop
-    config.py        read and check settings
-    fluxer/          client adapter, permission helpers
-    commands/        cogs: playback, queue, settings
+  Cargo.toml
+  migrations/        sqlx migrations
+  src/
+    main.rs          start bot and web server on one runtime
+    config.rs        read and check settings
+    fluxer/          event handler, client adapter, permissions
+    commands/        playback, queue, settings
     music_channel/   link detection, panel message, cleanup
-    core/            Queue, GuildPlayer, QueueService (the lock)
+    core/            Queue, GuildPlayer task, QueueService handles
     media/           ytdlp, youtube, spotify, matcher, url parsing
-    voice/           VoiceTransport and its LiveKit version
-    storage/         schema, data access, activity log
-    web/             FastAPI routes, OAuth, WebSocket hub
+    voice/           VoiceTransport trait and its LiveKit version
+    storage/         data access, activity log
+    web/             axum routes, OAuth, WebSocket hub
   web/               the drag-and-drop page (Svelte)
   Dockerfile
   docker-compose.yml
 ```
 
-The player for each server is a small state machine: idle → connecting → playing ⇄ paused → idle, plus a recovering state for watchdog restarts.
+Each server's player is one tokio task that owns a small state machine: idle → connecting → playing ⇄ paused → idle, plus a recovering state for watchdog restarts. Chat commands and the web server send it messages over an mpsc channel. It publishes each new snapshot on a watch channel that every open dashboard subscribes to.
 
 Vinto, an existing Fluxer music bot, is worth reading for ideas, but its license is source-available and private-use only, so don't copy its code.
 
@@ -302,7 +312,9 @@ YouTube blocking is the main recurring risk. Fluxer's voice change is still larg
 | --- | --- | --- |
 | Fluxer replaces LiveKit with its own voice system in 2026 | High, on your schedule | All voice code behind `VoiceTransport`; upgrade your instance only after a new transport is tested |
 | YouTube changes break yt-dlp | High, recurring | Daily yt-dlp updates, Deno, PO-token plugin, home IP, clear error messages |
-| fluxer.py falls behind Fluxer's API (alpha, last release March 2026) | Medium | Thin adapter around it; Interfluxer or raw gateway calls as fallback |
+| fluxer-rust falls behind Fluxer's API (0.2.x, one maintainer) | Medium | Thin adapter around it; Apache-2.0, so fork or patch it if needed |
+| Bot's own LiveKit track conflicts with fluxer-rust's default track | Medium | Unpublish the default track; test in Phase 0; offer an upstream fix |
+| Native WebRTC build in Docker is slow or fails | Medium | Debian-based images, cargo-chef caching, pinned `livekit` version |
 | Spotify tightens its API further | Medium | Embed-page fallback, cached matches; Spotify stays optional |
 | Encrypted voice channels drop or mute bot audio | Unknown | Test in Phase 0 before building on it |
 | Cleanup deletes a message it shouldn't | Low | Delete only the bot's own messages and messages it handled as commands or links |
@@ -312,7 +324,7 @@ YouTube blocking is the main recurring risk. Fluxer's voice change is still larg
 
 Settled from your answers; the plan above follows them. One small item is still open.
 
-- [x] Language: Python 3.14.
+- [x] Language: Rust with the fluxer-rust crate (changed from Python on 22 October).
 - [x] Host: Docker or a VM on your home network.
 - [x] Spotify: your Premium account and existing developer app.
 - [x] Rights: everyone can use every command and the dashboard.
@@ -328,9 +340,9 @@ Settled from your answers; the plan above follows them. One small item is still 
 - [Fluxer API: Voice](https://docs.fluxer.app/voice/)
 - [Fluxer API: OAuth2](https://docs.fluxer.app/http-api/oauth2/)
 - [Fluxer API: Introduction](https://docs.fluxer.app/)
-- [fluxer.py on PyPI](https://pypi.org/project/fluxer.py/)
-- [Interfluxer on PyPI](https://pypi.org/project/interfluxer/)
-- [LiveKit Python SDK on PyPI](https://pypi.org/project/livekit/)
+- [fluxer-rust on crates.io](https://crates.io/crates/fluxer-rust) and its [docs.rs page](https://docs.rs/fluxer-rust/latest/fluxer/)
+- [fluxer-rust: `Context` and `join_voice`](https://docs.rs/fluxer-rust/latest/fluxer/client/struct.Context.html)
+- [fluxer-rust: voice module source](https://docs.rs/fluxer-rust/latest/src/fluxer/voice/mod.rs.html)
 - [yt-dlp: external JavaScript runtime now required](https://github.com/yt-dlp/yt-dlp/issues/15012)
 - [Spotify: February 2026 migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide)
 - [Spotify: Web API changelog, February 2026](https://developer.spotify.com/documentation/web-api/references/changes/february-2026)

@@ -189,7 +189,7 @@ pub fn render(s: &Snapshot, prefix: &str) -> Embed {
             .map(|(i, t)| {
                 let mark = if i < s.upcoming_priority { PRIORITY_MARK } else { "" };
                 match t.duration_secs {
-                    Some(d) => format!("`{}.` {mark}{} ({})", i + 1, truncate(&t.title), fmt_duration(d)),
+                    Some(d) => format!("`{}.` {mark}[{}](<{}>) ({})", i + 1, truncate(&t.title), &t.url, fmt_duration(d)),
                     None => format!("`{}.` {mark}{}", i + 1, truncate(&t.title)),
                 }
             })

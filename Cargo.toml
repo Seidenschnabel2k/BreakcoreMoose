@@ -27,3 +27,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 dotenvy = "0.15.7"
 rand = "0.10"
+
+[profile.release]
+# Debug symbols are 11 MB of the 47 MB binary.
+strip = true

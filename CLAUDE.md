@@ -15,7 +15,10 @@ cargo test parses_commands                   # one test by name
 cargo test -- --ignored                      # live yt-dlp → ffmpeg test, needs network
 cargo clippy --all-targets
 FLUXER_URL=https://chat.example.com FLUXER_TOKEN=... cargo run
+docker build --pull -t breakcore-moose . && docker run -d --restart unless-stopped --env-file .env breakcore-moose
 ```
+
+The `Dockerfile` builds on `rust:*-slim-trixie` and runs on `debian:trixie-slim` with a static ffmpeg, Deno and the standalone `yt-dlp_linux`. yt-dlp and Deno track their latest releases, so `docker build --pull` refreshes them. ffmpeg stays pinned. Inside the container the bot can't update yt-dlp itself (it runs as a non-root user).
 
 Runtime needs `yt-dlp`, `ffmpeg` and `deno` on PATH. Settings are environment variables, also read from `.env` (see `.env.example` and `src/config.rs`): `FLUXER_TOKEN` (required), then `FLUXER_URL` (the API base is discovered from `/.well-known/fluxer`) or `FLUXER_API_URL` (overrides discovery), plus `MUSIC_CHANNEL_ID`, `VOLUME` (percent, applied by ffmpeg's `volume` filter, not adjustable at runtime), `BOT_PREFIX`, `YTDLP_PATH`, `FFMPEG_PATH`, `MAX_TRACK_SECONDS` and `PLAYLIST_LIMIT`. Log level is set with `RUST_LOG`.
 
@@ -54,9 +57,9 @@ These rules span several modules and are easy to break by accident:
 - **Music channel cleanup** deletes every message except the panel. The user chose this over the plan's narrower rule. Nothing outside the configured music channels is ever deleted.
 - **Persistence:** SQLite via sqlx. The in-memory player is the live truth, and each server's queue is written to disk at most once per second.
 
-## Build and deploy notes (planned)
+## Build and deploy notes
 
-- Use Debian-based Docker images, not Alpine, because `livekit` links native WebRTC. Install `pkg-config`, `libglib2.0-dev` and `libva-dev`. Use cargo-chef for dependency caching.
+- Use Debian-based Docker images, not Alpine, because `livekit` links native WebRTC. The build stage needs `pkg-config`, `libglib2.0-dev` and `libva-dev`. BuildKit cache mounts stand in for cargo-chef. A `docker-compose.yml` doesn't exist yet.
 - Settings come from environment variables via serde into one typed config (`config.rs`).
 - Logging uses `tracing` with JSON output and `tracing-appender` for rotating files.
 - Build order: voice playback first (Phase 0 checks the risky unknowns), then the chat bot, then persistence, then the dashboard.
