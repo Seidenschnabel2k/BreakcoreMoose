@@ -118,7 +118,7 @@ pub async fn resolve(config: &Config, source: Source, playlist_skip: usize, requ
         Source::Search(q) => (format!("ytsearch{SEARCH_RESULTS}:{q}"), true),
     };
 
-    let mut command = Command::new(&config.ytdlp_path);
+    let mut command = ytdlp_command(config);
     // --no-playlist: a watch link with &list= (or a mix) adds just that video.
     command.args(["-J", "--flat-playlist", "--no-playlist", "--no-warnings"]);
     if playlist_skip > 0 && !is_search {
@@ -182,6 +182,15 @@ fn from_info(info: Info, is_search: bool, requested_by: &str, config: &Config) -
 }
 
 /// Picks yt-dlp's `ERROR:` line, falling back to the last line of stderr.
+/// A yt-dlp command with the cookie file, if one is configured.
+fn ytdlp_command(config: &Config) -> Command {
+    let mut command = Command::new(&config.ytdlp_path);
+    if let Some(cookies) = &config.ytdlp_cookies {
+        command.arg("--cookies").arg(cookies);
+    }
+    command
+}
+
 fn ytdlp_error(stderr: &str) -> String {
     let line = stderr
         .lines()
@@ -207,7 +216,7 @@ impl AudioStream {
     /// `start_secs` > 0 seeks: ffmpeg decodes and drops audio up to that
     /// point, so a seek costs only the download up to it (a few seconds).
     pub fn open(config: &Config, url: &str, start_secs: u64) -> Result<Self> {
-        let mut ytdlp = Command::new(&config.ytdlp_path)
+        let mut ytdlp = ytdlp_command(config)
             .args(["-f", "bestaudio/best", "--no-playlist", "--quiet", "--no-warnings"])
             // yt-dlp's own HLS downloader (SoundCloud, Twitch, …) writes `--FragN`
             // files to the working directory even when streaming to stdout;
@@ -274,6 +283,7 @@ mod tests {
             api_url: String::new(),
             prefix: "!".into(),
             ytdlp_path: "yt-dlp".into(),
+            ytdlp_cookies: None,
             ffmpeg_path: "ffmpeg".into(),
             max_track_secs: 3 * 60 * 60,
             playlist_limit: 2,

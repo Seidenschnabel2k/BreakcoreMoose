@@ -15,12 +15,14 @@ cargo test parses_commands                   # one test by name
 cargo test -- --ignored                      # live yt-dlp → ffmpeg test, needs network
 cargo clippy --all-targets
 FLUXER_URL=https://chat.example.com FLUXER_TOKEN=... cargo run
-docker build --pull -t breakcore-moose . && docker run -d --restart unless-stopped --env-file .env breakcore-moose
+docker build --pull -t breakcore-moose . && docker run -d --restart unless-stopped --env-file .env -v "$PWD/cookies.txt:/home/bot/cookies.txt" breakcore-moose
 ```
 
 The `Dockerfile` builds on `rust:*-slim-trixie` and runs on `debian:trixie-slim` with a static ffmpeg, Deno and the standalone `yt-dlp_linux`. yt-dlp and Deno track their latest releases, so `docker build --pull` refreshes them. ffmpeg stays pinned. Inside the container the bot can't update yt-dlp itself (it runs as a non-root user).
 
-Runtime needs `yt-dlp`, `ffmpeg` and `deno` on PATH. Settings are environment variables, also read from `.env` (see `.env.example` and `src/config.rs`): `FLUXER_TOKEN` (required), then `FLUXER_URL` (the API base is discovered from `/.well-known/fluxer`) or `FLUXER_API_URL` (overrides discovery), plus `MUSIC_CHANNEL_ID`, `VOLUME` (percent, applied by ffmpeg's `volume` filter, not adjustable at runtime), `BOT_PREFIX`, `YTDLP_PATH`, `FFMPEG_PATH`, `MAX_TRACK_SECONDS` and `PLAYLIST_LIMIT`. Log level is set with `RUST_LOG`.
+yt-dlp can log in with a Netscape cookie file (`cookies.txt`, export it from a logged-in browser or with `yt-dlp --cookies-from-browser firefox --cookies cookies.txt`). If one is configured, every yt-dlp call gets `--cookies <file>`; without one the bot still works, only without login. The file is gitignored and dockerignored so it never ends up in the image (which is pushed to Docker Hub). Mount it at run time: `docker run ... -v "$PWD/cookies.txt:/home/bot/cookies.txt" breakcore-moose`. The container runs as uid 10001, and yt-dlp writes refreshed cookies back, so the mounted file must be writable by that uid.
+
+Runtime needs `yt-dlp`, `ffmpeg` and `deno` on PATH. Settings are environment variables, also read from `.env` (see `.env.example` and `src/config.rs`): `FLUXER_TOKEN` (required), then `FLUXER_URL` (the API base is discovered from `/.well-known/fluxer`) or `FLUXER_API_URL` (overrides discovery), plus `MUSIC_CHANNEL_ID`, `VOLUME` (percent, applied by ffmpeg's `volume` filter, not adjustable at runtime), `BOT_PREFIX`, `YTDLP_PATH`, `YTDLP_COOKIES` (cookie file; defaults to `cookies.txt` in the working directory if present), `FFMPEG_PATH`, `MAX_TRACK_SECONDS` and `PLAYLIST_LIMIT`. Log level is set with `RUST_LOG`.
 
 **LiveKit pins:** `Cargo.toml` pins the whole livekit/libwebrtc crate set with `=` versions. Newer patch releases of the livekit sub-crates fail to compile against each other. Bump the set together, and keep `livekit` equal to what fluxer-rust resolves to.
 

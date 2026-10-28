@@ -46,4 +46,7 @@ USER bot
 WORKDIR /home/bot
 
 # Configure with environment variables, e.g. `docker run --env-file .env ...`.
+# yt-dlp cookies are never baked into the image: mount them at run time with
+# `-v "$PWD/cookies.txt:/home/bot/cookies.txt"` (picked up from the working
+# directory). Without the mount the bot runs without cookies.
 ENTRYPOINT ["breakcore-moose"]

@@ -3,3 +3,5 @@ target/
 .git/
 .env
 *.md
+# Login cookies are mounted at run time, never built into the image.
+cookies.txt

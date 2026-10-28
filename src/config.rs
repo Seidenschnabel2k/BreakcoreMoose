@@ -1,5 +1,6 @@
 use anyhow::{Context as _, Result, bail};
 use std::env;
+use std::path::PathBuf;
 
 /// Settings read once at startup from environment variables.
 #[derive(Debug, Clone)]
@@ -9,6 +10,9 @@ pub struct Config {
     pub api_url: String,
     pub prefix: String,
     pub ytdlp_path: String,
+    /// Netscape cookie file handed to yt-dlp as `--cookies`, as an absolute
+    /// path (yt-dlp streams run in the temp directory).
+    pub ytdlp_cookies: Option<PathBuf>,
     pub ffmpeg_path: String,
     /// Single tracks longer than this are refused.
     pub max_track_secs: u64,
@@ -37,6 +41,7 @@ impl Config {
             api_url,
             prefix: env::var("BOT_PREFIX").unwrap_or_else(|_| "!".into()),
             ytdlp_path: env::var("YTDLP_PATH").unwrap_or_else(|_| "yt-dlp".into()),
+            ytdlp_cookies: ytdlp_cookies()?,
             ffmpeg_path: env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into()),
             max_track_secs: parse_var("MAX_TRACK_SECONDS", 3 * 60 * 60)?,
             playlist_limit: parse_var("PLAYLIST_LIMIT", 500)?,
@@ -63,6 +68,20 @@ fn parse_var<T: std::str::FromStr>(name: &str, default: T) -> Result<T> {
     match env::var(name) {
         Ok(v) => v.parse().map_err(|_| anyhow::anyhow!("{name} is not a valid number: {v}")),
         Err(_) => Ok(default),
+    }
+}
+
+/// `YTDLP_COOKIES` if set (it must exist), else `cookies.txt` in the working
+/// directory if there is one.
+fn ytdlp_cookies() -> Result<Option<PathBuf>> {
+    let (path, required) = match env::var("YTDLP_COOKIES") {
+        Ok(p) if !p.is_empty() => (PathBuf::from(p), true),
+        _ => (PathBuf::from("cookies.txt"), false),
+    };
+    match std::path::absolute(&path) {
+        Ok(abs) if abs.is_file() => Ok(Some(abs)),
+        _ if required => bail!("YTDLP_COOKIES: {} is not a file", path.display()),
+        _ => Ok(None),
     }
 }
 

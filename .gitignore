@@ -224,3 +224,6 @@ __marimo__/
 *.db
 *.db-*
 .env
+
+# yt-dlp login cookies
+cookies.txt
