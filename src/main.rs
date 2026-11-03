@@ -5,6 +5,7 @@ mod core;
 mod media;
 mod music_channel;
 mod voice;
+mod web;
 
 use std::sync::Arc;
 
@@ -12,8 +13,10 @@ use anyhow::Result;
 use fluxer::prelude::Client;
 use tracing_subscriber::EnvFilter;
 
+use crate::bot::Gateway;
 use crate::config::Config;
 use crate::core::Players;
+use crate::media::jellyfin::Jellyfin;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -33,12 +36,28 @@ async fn main() -> Result<()> {
 
     // fluxer-rust builds its Http inside the client; players need their own
     // to post messages outside of event handlers.
-    let http = Arc::new(fluxer::http::Http::new(&config.token, config.api_url.clone()));
-    let players = Players::new(config.clone(), http);
+    let http = Arc::new(fluxer::http::Http::new(
+        &config.token,
+        config.api_url.clone(),
+    ));
+    let players = Players::new(config.clone(), http.clone());
+    let gateway = Arc::new(Gateway::default());
+    let public_url = config.web.as_ref().map(|w| w.public_url.clone());
+    let jellyfin = config
+        .jellyfin
+        .clone()
+        .map(|j| Arc::new(Jellyfin::new(j, public_url)));
+    web::spawn(
+        config.clone(),
+        players.clone(),
+        gateway.clone(),
+        http,
+        jellyfin,
+    )?;
 
     let mut client = Client::builder(&config.token)
         .api_url(config.api_url.clone())
-        .event_handler(bot::Handler::new(config.clone(), players))
+        .event_handler(bot::Handler::new(config.clone(), players, gateway))
         .build();
     client.start().await?;
     Ok(())

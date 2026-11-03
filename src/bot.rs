@@ -9,7 +9,9 @@ use tokio::sync::RwLock;
 
 use crate::commands::{self, Command, ask};
 use crate::config::Config;
-use crate::core::{PlayerMsg, Players};
+use crate::core::{
+    Placement, PlayerMsg, Players, USER_MAX_VOLUME, from_user_volume, to_user_volume,
+};
 use crate::media::source;
 use crate::media::{fmt_duration, ytdlp};
 use crate::music_channel;
@@ -17,29 +19,84 @@ use crate::music_channel;
 /// Fluxer's voice channel type.
 const VOICE_CHANNEL: u64 = 2;
 
-pub struct Handler {
-    config: Arc<Config>,
-    players: Players,
+/// What the gateway tells us that the web player needs too.
+#[derive(Default)]
+pub struct Gateway {
+    /// The newest context; fluxer-rust builds a new one on every reconnect.
+    ctx: RwLock<Option<Context>>,
     /// guild id → user id → voice channel id, from VOICE_STATE_UPDATE.
     /// fluxer-rust drops GUILD_CREATE voice states, so people who were in
     /// voice before the bot started are unknown until they move.
     voice: RwLock<HashMap<String, HashMap<String, String>>>,
 }
 
-impl Handler {
-    pub fn new(config: Arc<Config>, players: Players) -> Self {
-        Self { config, players, voice: Default::default() }
+impl Gateway {
+    pub async fn context(&self) -> Option<Context> {
+        self.ctx.read().await.clone()
     }
 
-    async fn user_voice(&self, guild_id: &str, user_id: &str) -> Option<String> {
+    pub async fn user_voice(&self, guild_id: &str, user_id: &str) -> Option<String> {
         self.voice.read().await.get(guild_id)?.get(user_id).cloned()
     }
 
-    async fn run(&self, ctx: &Context, msg: &Message, guild_id: &str, channel_id: &str, cmd: Command) -> String {
+    async fn set_context(&self, ctx: &Context) {
+        let mut current = self.ctx.write().await;
+        if current
+            .as_ref()
+            .is_none_or(|c| !Arc::ptr_eq(&c.gateway_tx, &ctx.gateway_tx))
+        {
+            *current = Some(ctx.clone());
+        }
+    }
+}
+
+pub struct Handler {
+    config: Arc<Config>,
+    players: Players,
+    gateway: Arc<Gateway>,
+}
+
+impl Handler {
+    pub fn new(config: Arc<Config>, players: Players, gateway: Arc<Gateway>) -> Self {
+        Self {
+            config,
+            players,
+            gateway,
+        }
+    }
+
+    async fn user_voice(&self, guild_id: &str, user_id: &str) -> Option<String> {
+        self.gateway.user_voice(guild_id, user_id).await
+    }
+
+    /// Asks an existing player something that needs no reply text of its own.
+    async fn simple<T>(
+        &self,
+        guild_id: &str,
+        make: impl FnOnce(tokio::sync::oneshot::Sender<T>) -> PlayerMsg,
+    ) -> Option<T> {
+        let player = self.players.existing(guild_id).await?;
+        ask(&player, make).await
+    }
+
+    async fn run(
+        &self,
+        ctx: &Context,
+        msg: &Message,
+        guild_id: &str,
+        channel_id: &str,
+        cmd: Command,
+    ) -> String {
         let prefix = &self.config.prefix;
         match cmd {
-            Command::Play(query) => self.play(ctx, msg, guild_id, channel_id, &query, false).await,
-            Command::PlayNext(query) => self.play(ctx, msg, guild_id, channel_id, &query, true).await,
+            Command::Play(query) => {
+                self.play(ctx, msg, guild_id, channel_id, &query, false)
+                    .await
+            }
+            Command::PlayNext(query) => {
+                self.play(ctx, msg, guild_id, channel_id, &query, true)
+                    .await
+            }
             Command::Join(name) => {
                 let voice_channel = match name {
                     Some(name) => match find_voice_channel(ctx, guild_id, &name).await {
@@ -52,7 +109,7 @@ impl Handler {
                 let reply = ask(&player, |reply| PlayerMsg::Join {
                     ctx: ctx.clone(),
                     voice_channel,
-                    text_channel: channel_id.to_string(),
+                    text_channel: Some(channel_id.to_string()),
                     reply,
                 })
                 .await;
@@ -66,7 +123,10 @@ impl Handler {
                 let Some(player) = self.players.existing(guild_id).await else {
                     return "Nothing is playing.".into();
                 };
-                match ask(&player, |reply| PlayerMsg::Skip { reply }).await.flatten() {
+                match ask(&player, |reply| PlayerMsg::Skip { reply })
+                    .await
+                    .flatten()
+                {
                     Some(track) => format!("Skipped **{}**.", track.title),
                     None => "Nothing is playing.".into(),
                 }
@@ -75,20 +135,27 @@ impl Handler {
                 let Some(player) = self.players.existing(guild_id).await else {
                     return "The queue is empty.".into();
                 };
-                match ask(&player, |reply| PlayerMsg::Shuffle { reply }).await.unwrap_or(0) {
+                match ask(&player, |reply| PlayerMsg::Shuffle { reply })
+                    .await
+                    .unwrap_or(0)
+                {
                     0 | 1 => "Not enough tracks in the queue to shuffle.".into(),
                     n => format!("Shuffled {n} tracks."),
                 }
             }
             Command::Seek(None) => {
-                format!("Usage: `{prefix}seek 1:30` to jump to a time, or `{prefix}seek +30` / `{prefix}seek -15` to move.")
+                format!(
+                    "Usage: `{prefix}seek 1:30` to jump to a time, or `{prefix}seek +30` / `{prefix}seek -15` to move."
+                )
             }
             Command::Seek(Some(target)) => {
                 let Some(player) = self.players.existing(guild_id).await else {
                     return "Nothing is playing.".into();
                 };
                 match ask(&player, |reply| PlayerMsg::Seek { target, reply }).await {
-                    Some(Ok((title, position))) => format!("Jumped to {} in **{title}**.", fmt_duration(position)),
+                    Some(Ok((title, position))) => {
+                        format!("Jumped to {} in **{title}**.", fmt_duration(position))
+                    }
                     Some(Err(e)) => e,
                     None => "The player stopped unexpectedly.".into(),
                 }
@@ -97,7 +164,10 @@ impl Handler {
                 let Some(player) = self.players.existing(guild_id).await else {
                     return "The queue is already empty.".into();
                 };
-                match ask(&player, |reply| PlayerMsg::Clear { reply }).await.unwrap_or(0) {
+                match ask(&player, |reply| PlayerMsg::Clear { reply })
+                    .await
+                    .unwrap_or(0)
+                {
                     0 => "The queue is already empty.".into(),
                     1 => "Removed 1 track from the queue.".into(),
                     n => format!("Removed {n} tracks from the queue."),
@@ -121,6 +191,67 @@ impl Handler {
                     _ => "I'm not in a voice channel.".into(),
                 }
             }
+            Command::Pause => match self
+                .simple(guild_id, |reply| PlayerMsg::Pause { reply })
+                .await
+            {
+                Some(Ok(())) => format!("Paused. `{prefix}resume` continues."),
+                Some(Err(e)) => e,
+                None => "Nothing is playing.".into(),
+            },
+            Command::Resume => {
+                let voice_channel = self.user_voice(guild_id, &msg.author.id).await;
+                let player = self.players.get(guild_id).await;
+                match ask(&player, |reply| PlayerMsg::Play {
+                    ctx: ctx.clone(),
+                    voice_channel,
+                    reply,
+                })
+                .await
+                {
+                    Some(Ok(())) => "Playing.".into(),
+                    Some(Err(e)) => e,
+                    None => "The player stopped unexpectedly.".into(),
+                }
+            }
+            Command::Volume(None) => match self
+                .simple(guild_id, |reply| PlayerMsg::Queue { reply })
+                .await
+            {
+                Some(view) => format!(
+                    "Volume is {}%. Set it with `{prefix}volume 0-{USER_MAX_VOLUME}`.",
+                    to_user_volume(view.volume, self.config.volume)
+                ),
+                None => format!("Volume is {USER_MAX_VOLUME}%."),
+            },
+            Command::Volume(Some(v)) if v > USER_MAX_VOLUME => {
+                format!("Volume goes from 0 to {USER_MAX_VOLUME}%.")
+            }
+            Command::Volume(Some(percent)) => {
+                let player = self.players.get(guild_id).await;
+                let _ = player
+                    .send(PlayerMsg::SetVolume {
+                        percent: from_user_volume(percent, self.config.volume),
+                    })
+                    .await;
+                format!("Volume set to {percent}%.")
+            }
+            Command::Loop(None) => {
+                format!("Usage: `{prefix}loop off`, `{prefix}loop track` or `{prefix}loop queue`.")
+            }
+            Command::Loop(Some(mode)) => {
+                let player = self.players.get(guild_id).await;
+                let _ = player.send(PlayerMsg::SetRepeat { mode }).await;
+                match mode {
+                    crate::core::Repeat::Off => "Loop is off.".into(),
+                    crate::core::Repeat::Track => "Looping the current track.".into(),
+                    crate::core::Repeat::Queue => "Looping the queue.".into(),
+                }
+            }
+            Command::Web => match &self.config.web {
+                Some(web) => format!("Web player: {}/g/{guild_id}", web.public_url),
+                None => "The web player isn't set up (WEB_PUBLIC_URL).".into(),
+            },
             Command::Help => commands::help(prefix),
         }
     }
@@ -138,16 +269,23 @@ impl Handler {
         let source = source::classify(query);
         let _ = ctx.http.trigger_typing(channel_id).await;
 
-        let requested_by = msg.member.as_ref().map(|m| m.display_name()).filter(|n| !n.is_empty());
+        let requested_by = msg
+            .member
+            .as_ref()
+            .map(|m| m.display_name())
+            .filter(|n| !n.is_empty());
         let requested_by = requested_by.unwrap_or(&msg.author.username);
-        let resolved = match ytdlp::resolve(&self.config, source, playlist_skip, requested_by).await {
+        let resolved = match ytdlp::resolve(&self.config, source, playlist_skip, requested_by).await
+        {
             Ok(r) => r,
             Err(e) => return format!("Couldn't load that: {e}"),
         };
         if resolved.tracks.is_empty() {
             return match resolved.playlist_title {
                 Some(title) if playlist_skip > 0 => {
-                    format!("**{title}** has nothing playable after skipping the first {playlist_skip} tracks.")
+                    format!(
+                        "**{title}** has nothing playable after skipping the first {playlist_skip} tracks."
+                    )
                 }
                 Some(title) => format!("Nothing playable in **{title}**."),
                 None if resolved.skipped > 0 => "That video is live, private or too long.".into(),
@@ -160,9 +298,13 @@ impl Handler {
         let reply = ask(&player, |reply| PlayerMsg::Enqueue {
             ctx: ctx.clone(),
             tracks: resolved.tracks.clone(),
-            priority,
+            placement: if priority {
+                Placement::Next
+            } else {
+                Placement::End
+            },
             voice_channel,
-            text_channel: channel_id.to_string(),
+            text_channel: Some(channel_id.to_string()),
             reply,
         })
         .await;
@@ -184,7 +326,10 @@ async fn find_voice_channel(ctx: &Context, guild_id: &str, name: &str) -> Option
         .find(|c| {
             c.guild_id.as_deref() == Some(guild_id)
                 && c.kind == Some(VOICE_CHANNEL)
-                && (c.id == name || c.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name)))
+                && (c.id == name
+                    || c.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(name)))
         })
         .map(|c| c.id.clone())
 }
@@ -193,6 +338,7 @@ async fn find_voice_channel(ctx: &Context, guild_id: &str, name: &str) -> Option
 impl EventHandler for Handler {
     async fn on_ready(&self, ctx: Context, ready: Ready) {
         tracing::info!(user = %ready.user.username, "connected to Fluxer");
+        self.gateway.set_context(&ctx).await;
         // Runs again after a reconnect; the player ignores a repeat.
         for channel_id in &self.config.music_channels {
             let guild_id = match ctx.http.get_channel(channel_id).await {
@@ -207,13 +353,25 @@ impl EventHandler for Handler {
                 continue;
             };
             let player = self.players.get(&guild_id).await;
-            let _ = player.send(PlayerMsg::SetMusicChannel { channel_id: channel_id.clone() }).await;
+            let _ = player
+                .send(PlayerMsg::SetMusicChannel {
+                    channel_id: channel_id.clone(),
+                })
+                .await;
         }
     }
 
     async fn on_message(&self, ctx: Context, msg: Message) {
-        let Some(channel_id) = msg.channel_id.as_deref() else { return };
-        if ctx.cache.current_user().await.is_some_and(|u| u.id == msg.author.id) {
+        self.gateway.set_context(&ctx).await;
+        let Some(channel_id) = msg.channel_id.as_deref() else {
+            return;
+        };
+        if ctx
+            .cache
+            .current_user()
+            .await
+            .is_some_and(|u| u.id == msg.author.id)
+        {
             return;
         }
         let in_music_channel = self.config.is_music_channel(channel_id);
@@ -224,7 +382,8 @@ impl EventHandler for Handler {
         if msg.author.bot == Some(true) {
             return;
         }
-        let (Some(guild_id), Some(content)) = (msg.guild_id.as_deref(), msg.content.as_deref()) else {
+        let (Some(guild_id), Some(content)) = (msg.guild_id.as_deref(), msg.content.as_deref())
+        else {
             return;
         };
 
@@ -234,7 +393,9 @@ impl EventHandler for Handler {
             None if !in_music_channel => return,
             None if content.trim().is_empty() => return,
             // A bare message in the music channel is a play request.
-            None if !content.trim_start().starts_with(prefix.as_str()) => Command::Play(content.trim().to_string()),
+            None if !content.trim_start().starts_with(prefix.as_str()) => {
+                Command::Play(content.trim().to_string())
+            }
             None => Command::Help,
         };
 
@@ -248,9 +409,12 @@ impl EventHandler for Handler {
     }
 
     async fn on_voice_state_update(&self, ctx: Context, event: VoiceStateUpdate) {
-        let Some(guild_id) = event.guild_id else { return };
+        let Some(guild_id) = event.guild_id else {
+            return;
+        };
+        self.gateway.set_context(&ctx).await;
         {
-            let mut voice = self.voice.write().await;
+            let mut voice = self.gateway.voice.write().await;
             let guild = voice.entry(guild_id.clone()).or_default();
             match &event.channel_id {
                 Some(ch) => guild.insert(event.user_id.clone(), ch.clone()),
@@ -258,10 +422,17 @@ impl EventHandler for Handler {
             };
         }
 
-        let is_bot = ctx.cache.current_user().await.is_some_and(|u| u.id == event.user_id);
-        if is_bot
-            && let Some(player) = self.players.existing(&guild_id).await {
-                let _ = player.send(PlayerMsg::BotVoiceState { channel_id: event.channel_id }).await;
-            }
+        let is_bot = ctx
+            .cache
+            .current_user()
+            .await
+            .is_some_and(|u| u.id == event.user_id);
+        if is_bot && let Some(player) = self.players.existing(&guild_id).await {
+            let _ = player
+                .send(PlayerMsg::BotVoiceState {
+                    channel_id: event.channel_id,
+                })
+                .await;
+        }
     }
 }

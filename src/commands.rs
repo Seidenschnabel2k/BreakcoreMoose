@@ -2,7 +2,9 @@
 
 use tokio::sync::oneshot;
 
-use crate::core::{Enqueued, JoinError, PlayerMsg, SeekTarget, Snapshot, describe};
+use crate::core::{
+    Enqueued, JoinError, PlayerMsg, Repeat, SeekTarget, Snapshot, USER_MAX_VOLUME, describe,
+};
 use crate::media::fmt_duration;
 use crate::media::source::{self, Source};
 use crate::media::ytdlp::Resolved;
@@ -18,9 +20,17 @@ pub enum Command {
     Queue,
     Shuffle,
     Clear,
+    Pause,
+    Resume,
+    /// `None` shows the current volume.
+    Volume(Option<u16>),
+    /// `None` when the mode didn't parse.
+    Loop(Option<Repeat>),
     /// Optional voice channel name, for when we can't see the caller's channel.
     Join(Option<String>),
     Leave,
+    /// Link to the web player.
+    Web,
     Help,
 }
 
@@ -39,8 +49,23 @@ pub fn parse(content: &str, prefix: &str) -> Option<Command> {
         "queue" | "q" => Command::Queue,
         "shuffle" => Command::Shuffle,
         "clear" => Command::Clear,
+        "pause" => Command::Pause,
+        "resume" | "unpause" => Command::Resume,
+        "volume" | "vol" | "v" => Command::Volume(
+            arg.as_deref()
+                .and_then(|a| a.trim_end_matches('%').parse().ok()),
+        ),
+        "loop" | "repeat" => {
+            Command::Loop(match arg.as_deref().map(str::to_lowercase).as_deref() {
+                Some("off") => Some(Repeat::Off),
+                Some("track" | "song" | "one") => Some(Repeat::Track),
+                Some("queue" | "all") => Some(Repeat::Queue),
+                _ => None,
+            })
+        }
         "join" | "j" => Command::Join(arg),
         "leave" | "stop" | "disconnect" => Command::Leave,
+        "web" | "dashboard" => Command::Web,
         "help" => Command::Help,
         _ => return None,
     })
@@ -68,7 +93,11 @@ pub fn parse_seek(arg: &str) -> Option<SeekTarget> {
         _ => (SeekTarget::To, arg),
     };
     let parts: Vec<&str> = time.split(':').collect();
-    if parts.len() > 3 || parts.iter().any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit())) {
+    if parts.len() > 3
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
+    {
         return None;
     }
     let mut secs: u64 = 0;
@@ -93,8 +122,12 @@ pub fn help(prefix: &str) -> String {
         format!("`{prefix}queue`: show what's playing and coming up"),
         format!("`{prefix}shuffle`: shuffle the queue (priority tracks stay first)"),
         format!("`{prefix}clear`: remove all upcoming tracks, priority ones too"),
+        format!("`{prefix}pause` / `{prefix}resume`: pause or continue the current track"),
+        format!("`{prefix}volume <0-{USER_MAX_VOLUME}>`: set the volume in percent"),
+        format!("`{prefix}loop off|track|queue`: repeat nothing, the current track, or the whole queue"),
         format!("`{prefix}join [channel]`: join your voice channel (or the one named)"),
         format!("`{prefix}leave`: stop, clear the queue and leave voice"),
+        format!("`{prefix}web`: link to the web player"),
     ]
     .join("\n")
 }
@@ -119,12 +152,25 @@ pub fn join_error(e: &JoinError, prefix: &str) -> String {
     }
 }
 
-pub fn enqueued(resolved: &Resolved, outcome: &Enqueued, priority: bool, playlist_skip: usize) -> String {
-    let lane = if priority { " to the priority queue" } else { "" };
+pub fn enqueued(
+    resolved: &Resolved,
+    outcome: &Enqueued,
+    priority: bool,
+    playlist_skip: usize,
+) -> String {
+    let lane = if priority {
+        " to the priority queue"
+    } else {
+        ""
+    };
     let mut text = match (&resolved.playlist_title, resolved.tracks.as_slice()) {
         (Some(title), _) => format!("Added {} tracks from **{title}**{lane}", outcome.count),
         (None, [track]) if outcome.position == 0 => format!("Now playing {}", describe(track)),
-        (None, [track]) => format!("Added {}{lane} at position {}", describe(track), outcome.position),
+        (None, [track]) => format!(
+            "Added {}{lane} at position {}",
+            describe(track),
+            outcome.position
+        ),
         (None, _) => format!("Added {} tracks{lane}", outcome.count),
     };
     if resolved.playlist_title.is_none() && playlist_skip > 0 {
@@ -151,6 +197,8 @@ pub fn enqueued(resolved: &Resolved, outcome: &Enqueued, priority: bool, playlis
     text
 }
 
+const QUEUE_PAGE: usize = 10;
+
 /// Shown before priority-lane tracks in queue listings.
 pub const PRIORITY_MARK: &str = "⏫ ";
 
@@ -163,19 +211,33 @@ pub fn queue(view: &Snapshot) -> String {
                 Some(d) => format!("{} / {}", fmt_duration(elapsed), fmt_duration(d)),
                 None => fmt_duration(elapsed),
             };
-            lines.push(format!("Now playing: **{}** [{progress}]", track.title));
+            let state = if now.paused { "Paused" } else { "Now playing" };
+            lines.push(format!("{state}: **{}** [{progress}]", track.title));
         }
         None => lines.push("Nothing is playing.".into()),
     }
-    if view.upcoming.is_empty() {
+    if view.queue.is_empty() {
         lines.push("The queue is empty.".into());
     } else {
-        for (i, track) in view.upcoming.iter().enumerate() {
-            let mark = if i < view.upcoming_priority { PRIORITY_MARK } else { "" };
-            lines.push(format!("`{}.` {mark}{} · {}", i + 1, describe(track), track.requested_by));
+        for (i, track) in view.upcoming(QUEUE_PAGE).enumerate() {
+            let mark = if i < view.upcoming_priority {
+                PRIORITY_MARK
+            } else {
+                ""
+            };
+            lines.push(format!(
+                "`{}.` {mark}{} · {}",
+                i + 1,
+                describe(track),
+                track.requested_by
+            ));
         }
-        let more = view.upcoming_total - view.upcoming.len();
-        let mut footer = format!("{} upcoming, {} total", view.upcoming_total, fmt_duration(view.upcoming_secs));
+        let more = view.upcoming_total().saturating_sub(QUEUE_PAGE);
+        let mut footer = format!(
+            "{} upcoming, {} total",
+            view.upcoming_total(),
+            fmt_duration(view.upcoming_secs)
+        );
         if more > 0 {
             footer = format!("…and {more} more. {footer}");
         }
@@ -190,17 +252,40 @@ mod tests {
 
     #[test]
     fn parses_commands() {
-        assert_eq!(parse("!play  never gonna ", "!"), Some(Command::Play("never gonna".into())));
-        assert_eq!(parse("!P https://youtu.be/x", "!"), Some(Command::Play("https://youtu.be/x".into())));
+        assert_eq!(
+            parse("!play  never gonna ", "!"),
+            Some(Command::Play("never gonna".into()))
+        );
+        assert_eq!(
+            parse("!P https://youtu.be/x", "!"),
+            Some(Command::Play("https://youtu.be/x".into()))
+        );
         assert_eq!(parse("!skip", "!"), Some(Command::Skip));
-        assert_eq!(parse("!n https://youtu.be/x", "!"), Some(Command::PlayNext("https://youtu.be/x".into())));
-        assert_eq!(parse("!next some song", "!"), Some(Command::PlayNext("some song".into())));
+        assert_eq!(
+            parse("!n https://youtu.be/x", "!"),
+            Some(Command::PlayNext("https://youtu.be/x".into()))
+        );
+        assert_eq!(
+            parse("!next some song", "!"),
+            Some(Command::PlayNext("some song".into()))
+        );
         assert_eq!(parse("!q", "!"), Some(Command::Queue));
         assert_eq!(parse("!clear", "!"), Some(Command::Clear));
         assert_eq!(parse("!shuffle", "!"), Some(Command::Shuffle));
         assert_eq!(parse("!join", "!"), Some(Command::Join(None)));
-        assert_eq!(parse("!join Music Room", "!"), Some(Command::Join(Some("Music Room".into()))));
+        assert_eq!(
+            parse("!join Music Room", "!"),
+            Some(Command::Join(Some("Music Room".into())))
+        );
         assert_eq!(parse("!stop", "!"), Some(Command::Leave));
+        assert_eq!(parse("!pause", "!"), Some(Command::Pause));
+        assert_eq!(parse("!vol 80%", "!"), Some(Command::Volume(Some(80))));
+        assert_eq!(parse("!volume", "!"), Some(Command::Volume(None)));
+        assert_eq!(
+            parse("!loop queue", "!"),
+            Some(Command::Loop(Some(Repeat::Queue)))
+        );
+        assert_eq!(parse("!loop maybe", "!"), Some(Command::Loop(None)));
     }
 
     #[test]
@@ -211,7 +296,10 @@ mod tests {
         assert_eq!(split_playlist_skip(pl), (pl, 0));
         assert_eq!(split_playlist_skip("track 2"), ("track 2", 0));
         assert_eq!(split_playlist_skip("blink 182"), ("blink 182", 0));
-        assert_eq!(split_playlist_skip(&format!("{pl} ten")), (format!("{pl} ten").as_str(), 0));
+        assert_eq!(
+            split_playlist_skip(&format!("{pl} ten")),
+            (format!("{pl} ten").as_str(), 0)
+        );
     }
 
     #[test]
@@ -224,7 +312,10 @@ mod tests {
         for bad in ["", "abc", "1:60", "1::2", "+", "1:2:3:4", "1.5", "-x"] {
             assert_eq!(parse_seek(bad), None, "{bad}");
         }
-        assert_eq!(parse("!seek 2:00", "!"), Some(Command::Seek(Some(SeekTarget::To(120)))));
+        assert_eq!(
+            parse("!seek 2:00", "!"),
+            Some(Command::Seek(Some(SeekTarget::To(120))))
+        );
         assert_eq!(parse("!seek nope", "!"), Some(Command::Seek(None)));
     }
 

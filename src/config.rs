@@ -23,6 +23,47 @@ pub struct Config {
     /// Channels where the bot keeps a now-playing panel, plays bare messages
     /// and deletes everything else. At most one per server.
     pub music_channels: Vec<String>,
+    /// The web player; `None` unless `WEB_PUBLIC_URL` is set.
+    pub web: Option<WebConfig>,
+    pub jellyfin: Option<JellyfinConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WebConfig {
+    /// Address the HTTP server listens on.
+    pub bind: String,
+    /// Where people reach the page, e.g. `https://music.example.com`, without
+    /// a trailing slash. The OAuth redirect and the WebSocket origin check
+    /// are derived from it.
+    pub public_url: String,
+    pub client_id: String,
+    pub client_secret: String,
+    /// Encrypts the session cookie. Random per start when unset, which logs
+    /// everyone out on restart.
+    pub secret: Option<String>,
+}
+
+impl WebConfig {
+    pub fn redirect_uri(&self) -> String {
+        format!("{}/auth/callback", self.public_url)
+    }
+}
+
+#[derive(Clone)]
+pub struct JellyfinConfig {
+    pub url: String,
+    pub api_key: String,
+    /// User whose library and playlists are shown; the first administrator if unset.
+    pub user: Option<String>,
+}
+
+impl std::fmt::Debug for JellyfinConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JellyfinConfig")
+            .field("url", &self.url)
+            .field("user", &self.user)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Config {
@@ -56,6 +97,8 @@ impl Config {
                 .filter(|id| !id.is_empty())
                 .map(String::from)
                 .collect(),
+            web: web_config()?,
+            jellyfin: jellyfin_config()?,
         })
     }
 
@@ -64,9 +107,56 @@ impl Config {
     }
 }
 
+fn var(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn web_config() -> Result<Option<WebConfig>> {
+    let Some(public_url) = var("WEB_PUBLIC_URL") else {
+        return Ok(None);
+    };
+    let public_url = public_url.trim_end_matches('/').to_string();
+    url::Url::parse(&public_url)
+        .with_context(|| format!("WEB_PUBLIC_URL is not a URL: {public_url}"))?;
+    let (Some(client_id), Some(client_secret)) = (
+        var("FLUXER_OAUTH_CLIENT_ID"),
+        var("FLUXER_OAUTH_CLIENT_SECRET"),
+    ) else {
+        bail!("WEB_PUBLIC_URL needs FLUXER_OAUTH_CLIENT_ID and FLUXER_OAUTH_CLIENT_SECRET");
+    };
+    let secret = var("WEB_SECRET");
+    if secret.as_ref().is_some_and(|s| s.len() < 32) {
+        bail!("WEB_SECRET must be at least 32 characters");
+    }
+    Ok(Some(WebConfig {
+        bind: var("WEB_BIND").unwrap_or_else(|| "0.0.0.0:8080".into()),
+        public_url,
+        client_id,
+        client_secret,
+        secret,
+    }))
+}
+
+fn jellyfin_config() -> Result<Option<JellyfinConfig>> {
+    match (var("JELLYFIN_URL"), var("JELLYFIN_API_KEY")) {
+        (Some(url), Some(api_key)) => Ok(Some(JellyfinConfig {
+            url: url.trim_end_matches('/').to_string(),
+            api_key,
+            user: var("JELLYFIN_USER"),
+        })),
+        (None, None) => Ok(None),
+        _ => bail!("set both JELLYFIN_URL and JELLYFIN_API_KEY, or neither"),
+    }
+}
+
 fn parse_var<T: std::str::FromStr>(name: &str, default: T) -> Result<T> {
     match env::var(name) {
-        Ok(v) => v.parse().map_err(|_| anyhow::anyhow!("{name} is not a valid number: {v}")),
+        Ok(v) => v
+            .parse()
+            .map_err(|_| anyhow::anyhow!("{name} is not a valid number: {v}")),
         Err(_) => Ok(default),
     }
 }
@@ -104,5 +194,9 @@ async fn discover_api_url(instance: &str) -> Result<String> {
         .as_str()
         .with_context(|| format!("{url} has no endpoints.api"))?
         .trim_end_matches('/');
-    Ok(if api.ends_with("/v1") { api.to_string() } else { format!("{api}/v1") })
+    Ok(if api.ends_with("/v1") {
+        api.to_string()
+    } else {
+        format!("{api}/v1")
+    })
 }

@@ -1,4 +1,4 @@
-# Only Cargo.toml, Cargo.lock and src/ are needed to build.
+# Only Cargo.toml, Cargo.lock, src/ and web/ are needed to build.
 target/
 .git/
 .env

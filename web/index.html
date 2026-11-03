@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Breakcore Moose</title>
+<link rel="icon" href="/assets/icon.svg">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<!-- Login / server picker -->
+<section id="gate" class="win gate" hidden>
+  <header class="titlebar"><span class="grip"></span><span class="title">BREAKCORE MOOSE</span><span class="grip"></span></header>
+  <div class="gate-body">
+    <div class="lcd gate-lcd" id="gate-text">LOADING…</div>
+    <div id="gate-actions"></div>
+  </div>
+</section>
+
+<main id="app" hidden>
+  <div class="col col-left">
+
+    <!-- Main window -->
+    <section class="win player">
+      <header class="titlebar">
+        <span class="grip"></span><span class="title">BREAKCORE MOOSE</span><span class="grip"></span>
+        <span class="who" id="who"></span>
+        <form method="post" action="/auth/logout"><button class="tb-btn" title="Log out">×</button></form>
+      </header>
+
+      <div class="display">
+        <div class="lcd lcd-left">
+          <div class="state-row">
+            <span id="state-icon" class="state-icon stopped"></span>
+            <span id="time" class="time" title="Click: elapsed / remaining">  :  </span>
+          </div>
+          <canvas id="vis" width="152" height="40" title="Spectrum"></canvas>
+        </div>
+        <div class="lcd lcd-right">
+          <div class="marquee"><span id="marquee">BREAKCORE MOOSE</span></div>
+          <div class="info-row">
+            <span class="tag"><b>48</b>kHz</span>
+            <span class="tag" id="vol-label"><b>100</b>%</span>
+            <span class="tag lit" id="stereo">STEREO</span>
+          </div>
+          <div class="info-row">
+            <span class="tag voice" id="voice">NOT IN VOICE</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="seek-row">
+        <input type="range" id="seek" class="slider seek" min="0" max="1000" value="0" disabled>
+      </div>
+
+      <div class="controls">
+        <div class="transport">
+          <button class="btn icon" data-op="prev" title="Previous / restart"><svg viewBox="0 0 16 12"><rect x="1" y="1" width="2" height="10"/><path d="M15 1v10L4 6z"/></svg></button>
+          <button class="btn icon" data-op="play" title="Play"><svg viewBox="0 0 16 12"><path d="M3 1v10l10-5z"/></svg></button>
+          <button class="btn icon" data-op="pause" title="Pause"><svg viewBox="0 0 16 12"><rect x="3" y="1" width="3.5" height="10"/><rect x="9.5" y="1" width="3.5" height="10"/></svg></button>
+          <button class="btn icon" data-op="stop" title="Stop (keeps the track at the top of the playlist)"><svg viewBox="0 0 16 12"><rect x="3" y="1" width="10" height="10"/></svg></button>
+          <button class="btn icon" data-op="next" title="Next"><svg viewBox="0 0 16 12"><path d="M1 1v10l11-5z"/><rect x="13" y="1" width="2" height="10"/></svg></button>
+        </div>
+        <div class="toggles">
+          <button class="btn small" data-op="shuffle" title="Shuffle the playlist (priority tracks stay first)">SHUF</button>
+          <button class="btn small led-btn" id="repeat" title="Repeat: off / all / one">REP <i class="led"></i><em id="repeat-mode"></em></button>
+        </div>
+        <label class="vol" title="Volume">
+          <span>VOL</span>
+          <input type="range" id="volume" class="slider volume" min="0" max="100" value="100">
+        </label>
+      </div>
+    </section>
+
+    <!-- Playlist editor -->
+    <section class="win playlist">
+      <header class="titlebar"><span class="grip"></span><span class="title">PLAYLIST EDITOR</span><span class="grip"></span></header>
+      <div class="pl-wrap lcd-list" id="pl-wrap" tabindex="0">
+        <ol id="playlist" class="rows"></ol>
+        <div id="drop-line" class="drop-line" hidden></div>
+      </div>
+      <form class="add-bar" id="add-form" hidden>
+        <input id="add-input" class="field" placeholder="Link (YouTube, SoundCloud, Bandcamp…) or search" autocomplete="off">
+        <button class="btn small">ADD</button>
+        <button class="btn small" type="button" id="add-cancel">×</button>
+      </form>
+      <footer class="pl-footer">
+        <div class="pl-buttons">
+          <button class="btn small" id="pl-add" title="Add a link or search">+ ADD</button>
+          <button class="btn small" id="pl-rem" title="Remove selected (Del)">− REM</button>
+          <button class="btn small" id="pl-sel" title="Select all (Ctrl+A)">SEL</button>
+          <div class="menu-wrap">
+            <button class="btn small" id="pl-misc">MISC ▾</button>
+            <div class="menu" id="misc-menu" hidden>
+              <button data-op="shuffle">Shuffle playlist</button>
+              <button id="misc-clear">Clear playlist…</button>
+              <button id="misc-none">Select none</button>
+            </div>
+          </div>
+        </div>
+        <div class="lcd pl-total" id="pl-total">0 / 0:00</div>
+      </footer>
+    </section>
+  </div>
+
+  <div class="col col-right">
+    <!-- Search -->
+    <section class="win library">
+      <header class="titlebar"><span class="grip"></span><span class="title">MEDIA LIBRARY</span><span class="grip"></span></header>
+      <nav class="tabs" id="tabs">
+        <button class="tab active" data-source="youtube">YOUTUBE MUSIC</button>
+        <button class="tab" data-source="soundcloud">SOUNDCLOUD</button>
+        <button class="tab" data-source="jellyfin" id="tab-jellyfin">JELLYFIN</button>
+      </nav>
+      <form class="search-bar" id="search-form">
+        <input id="search-input" class="field" placeholder="Search YouTube Music" autocomplete="off">
+        <button class="btn small">SEARCH</button>
+      </form>
+      <div class="kinds" id="kinds" hidden>
+        <button class="chip active" data-kind="song">SONGS</button>
+        <button class="chip" data-kind="album">ALBUMS</button>
+        <button class="chip" data-kind="playlist">PLAYLISTS</button>
+        <button class="chip" data-kind="artist">ARTISTS</button>
+      </div>
+      <div class="crumb" id="crumb" hidden>
+        <button class="btn small" id="crumb-back">◂ BACK</button>
+        <span id="crumb-name"></span>
+        <button class="btn small" id="crumb-add">+ ALL</button>
+        <button class="btn small" id="crumb-mix">MIX</button>
+      </div>
+      <div class="results lcd-list" id="results-wrap">
+        <ol id="results" class="rows results-rows"></ol>
+        <div class="empty" id="results-empty">Search above. Drag results into the playlist, or use + (add) and » (play next).</div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div id="toasts" class="toasts"></div>
+<div id="drag-ghost" class="drag-ghost" hidden></div>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>

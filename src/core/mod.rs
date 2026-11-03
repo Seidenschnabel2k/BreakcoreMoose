@@ -1,12 +1,19 @@
 //! Per-server players. Every queue change goes through one task per server,
-//! so chat (and later the dashboard) can never interleave edits.
+//! so chat and the web player can never interleave edits.
 
 mod player;
 mod queue;
+pub mod spectrum;
 
-pub use player::{Enqueued, JoinError, PlayerMsg, SeekTarget, Snapshot, describe};
 #[cfg(test)]
 pub use player::NowPlaying;
+pub use player::{
+    Enqueued, JoinError, PlayerMsg, Repeat, SeekTarget, Snapshot, USER_MAX_VOLUME, describe,
+    from_user_volume, to_user_volume,
+};
+#[cfg(test)]
+pub use queue::Entry;
+pub use queue::Placement;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,7 +32,11 @@ pub struct Players {
 
 impl Players {
     pub fn new(config: Arc<Config>, http: Arc<Http>) -> Self {
-        Self { config, http, players: Default::default() }
+        Self {
+            config,
+            http,
+            players: Default::default(),
+        }
     }
 
     /// The sender for this server's player, spawning the task on first use.

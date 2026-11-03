@@ -87,12 +87,27 @@ mod tests {
         ] {
             assert!(matches!(classify(link), Source::Url(_)), "{link}");
         }
-        assert_eq!(classify("daft punk one more time"), Source::Search("daft punk one more time".into()));
+        assert_eq!(
+            classify("daft punk one more time"),
+            Source::Search("daft punk one more time".into())
+        );
     }
 
     #[test]
     fn private_addresses() {
-        for ip in ["127.0.0.1", "10.1.2.3", "192.168.1.1", "172.16.0.5", "169.254.1.1", "100.100.1.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:192.168.1.1"] {
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "192.168.1.1",
+            "172.16.0.5",
+            "169.254.1.1",
+            "100.100.1.1",
+            "0.0.0.0",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:192.168.1.1",
+        ] {
             assert!(!is_public(ip.parse().unwrap()), "{ip}");
         }
         for ip in ["1.1.1.1", "142.250.1.1", "2a00:1450::1"] {

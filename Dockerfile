@@ -12,6 +12,8 @@ RUN apt-get update \
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# The web player's page, embedded into the binary.
+COPY web ./web
 
 # --locked keeps the pinned livekit crate set from Cargo.lock. The cache mounts
 # keep crates and the WebRTC build between image builds.
@@ -49,4 +51,6 @@ WORKDIR /home/bot
 # yt-dlp cookies are never baked into the image: mount them at run time with
 # `-v "$PWD/cookies.txt:/home/bot/cookies.txt"` (picked up from the working
 # directory). Without the mount the bot runs without cookies.
+# The web player (only when WEB_PUBLIC_URL is set).
+EXPOSE 8080
 ENTRYPOINT ["breakcore-moose"]

@@ -9,8 +9,8 @@ use fluxer::http::Http;
 use fluxer::prelude::{Embed, EmbedBuilder, GetMessagesQuery, MessageCreatePayload};
 use tokio::sync::watch;
 
-use crate::core::Snapshot;
 use crate::commands::PRIORITY_MARK;
+use crate::core::Snapshot;
 use crate::media::fmt_duration;
 
 /// How long the bot's replies stay up in the music channel.
@@ -22,6 +22,8 @@ const DEBOUNCE: Duration = Duration::from_millis(1500);
 const PURGE_PAGES: usize = 10;
 const UP_NEXT: usize = 10;
 const TITLE_MAX: usize = 80;
+/// Longest embed field value the API accepts.
+const FIELD_MAX: usize = 1024;
 const COLOR: u64 = 0xE0457B;
 
 /// Posts `text` to the music channel and deletes it after [`REPLY_TTL`].
@@ -44,7 +46,12 @@ pub async fn delete(http: &Http, channel_id: &str, message_id: &str) {
 }
 
 /// Runs the panel for one channel until the player goes away.
-pub fn spawn_panel(http: Arc<Http>, channel_id: String, prefix: String, rx: watch::Receiver<Snapshot>) {
+pub fn spawn_panel(
+    http: Arc<Http>,
+    channel_id: String,
+    prefix: String,
+    rx: watch::Receiver<Snapshot>,
+) {
     tokio::spawn(run_panel(http, channel_id, prefix, rx));
 }
 
@@ -56,7 +63,12 @@ struct Panel {
     rendered: String,
 }
 
-async fn run_panel(http: Arc<Http>, channel_id: String, prefix: String, mut rx: watch::Receiver<Snapshot>) {
+async fn run_panel(
+    http: Arc<Http>,
+    channel_id: String,
+    prefix: String,
+    mut rx: watch::Receiver<Snapshot>,
+) {
     purge(&http, &channel_id).await;
     let mut panel: Option<Panel> = None;
 
@@ -69,8 +81,14 @@ async fn run_panel(http: Arc<Http>, channel_id: String, prefix: String, mut rx: 
         panel = match panel.take() {
             Some(p) if p.generation == generation && p.rendered == rendered => Some(p),
             Some(p) if p.generation == generation => {
-                let payload = MessageCreatePayload { embeds: Some(vec![embed.clone()]), ..Default::default() };
-                match http.edit_message_advanced(&channel_id, &p.message_id, &payload).await {
+                let payload = MessageCreatePayload {
+                    embeds: Some(vec![embed.clone()]),
+                    ..Default::default()
+                };
+                match http
+                    .edit_message_advanced(&channel_id, &p.message_id, &payload)
+                    .await
+                {
                     Ok(_) => Some(Panel { rendered, ..p }),
                     // Someone deleted it; post a fresh one.
                     Err(_) => post(&http, &channel_id, embed, generation, rendered).await,
@@ -96,11 +114,22 @@ async fn run_panel(http: Arc<Http>, channel_id: String, prefix: String, mut rx: 
     }
 }
 
-async fn post(http: &Http, channel_id: &str, embed: Embed, generation: Option<u64>, rendered: String) -> Option<Panel> {
-    match http.send_embed(channel_id, None, vec![embed]).await {
-        Ok(msg) => Some(Panel { message_id: msg.id, generation, rendered }),
+async fn post(
+    http: &Http,
+    channel_id: &str,
+    embed: Embed,
+    generation: Option<u64>,
+    rendered: String,
+) -> Option<Panel> {
+    match http.send_embed(channel_id, None, vec![embed.clone()]).await {
+        Ok(msg) => Some(Panel {
+            message_id: msg.id,
+            generation,
+            rendered,
+        }),
         Err(e) => {
             tracing::warn!(channel = %channel_id, "posting panel: {e}");
+            tracing::debug!(channel = %channel_id, embed = %serde_json::to_string(&embed).unwrap_or_default(), "rejected panel");
             None
         }
     }
@@ -110,7 +139,10 @@ async fn post(http: &Http, channel_id: &str, embed: Embed, generation: Option<u6
 async fn purge(http: &Http, channel_id: &str) {
     let mut deleted = 0;
     for _ in 0..PURGE_PAGES {
-        let query = GetMessagesQuery { limit: Some(100), ..Default::default() };
+        let query = GetMessagesQuery {
+            limit: Some(100),
+            ..Default::default()
+        };
         let messages = match http.get_messages(channel_id, query).await {
             Ok(m) if !m.is_empty() => m,
             Ok(_) => break,
@@ -120,7 +152,11 @@ async fn purge(http: &Http, channel_id: &str) {
             }
         };
         let ids: Vec<&str> = messages.iter().map(|m| m.id.as_str()).collect();
-        let bulk_ok = ids.len() >= 2 && http.bulk_delete_messages(channel_id, ids.clone()).await.is_ok();
+        let bulk_ok = ids.len() >= 2
+            && http
+                .bulk_delete_messages(channel_id, ids.clone())
+                .await
+                .is_ok();
         if !bulk_ok {
             // Bulk delete can refuse old messages; fall back to one by one.
             for id in &ids {
@@ -145,6 +181,34 @@ fn truncate(title: &str) -> String {
     format!("{cut}…")
 }
 
+/// Joins as many queue lines as fit in one embed field, plus an "…and N
+/// more" line for the rest of `total`. Fluxer rejects the whole message
+/// if a field value is longer than [`FIELD_MAX`] characters.
+fn fit_lines(lines: Vec<String>, total: usize) -> String {
+    // Room for "\n…and 99999 more".
+    const MORE_RESERVE: usize = 20;
+    let mut out = String::new();
+    let mut len = 0;
+    let mut shown = 0;
+    for line in lines {
+        let line_len = line.chars().count() + usize::from(shown > 0);
+        if len + line_len > FIELD_MAX - MORE_RESERVE {
+            break;
+        }
+        if shown > 0 {
+            out.push('\n');
+        }
+        out.push_str(&line);
+        len += line_len;
+        shown += 1;
+    }
+    let more = total.saturating_sub(shown);
+    if more > 0 {
+        out.push_str(&format!("\n…and {more} more"));
+    }
+    out
+}
+
 pub fn render(s: &Snapshot, prefix: &str) -> Embed {
     let voice = match &s.voice_channel {
         Some(ch) => format!("<#{ch}>"),
@@ -152,9 +216,14 @@ pub fn render(s: &Snapshot, prefix: &str) -> Embed {
     };
 
     let Some(now) = &s.now else {
-        let mut description = String::from("Nothing is playing.\n\nPost a link (YouTube, SoundCloud, Bandcamp, …), a playlist or a search here to start.");
-        if s.upcoming_total > 0 {
-            description.push_str(&format!("\n{} tracks are waiting; use `{prefix}join` to continue.", s.upcoming_total));
+        let mut description = String::from(
+            "Nothing is playing.\n\nPost a link (YouTube, SoundCloud, Bandcamp, …), a playlist or a search here to start.",
+        );
+        if s.upcoming_total() > 0 {
+            description.push_str(&format!(
+                "\n{} tracks are waiting; use `{prefix}join` to continue.",
+                s.upcoming_total()
+            ));
         }
         return EmbedBuilder::new()
             .title("Idle")
@@ -167,46 +236,61 @@ pub fn render(s: &Snapshot, prefix: &str) -> Embed {
 
     let track = &now.track;
     let mut builder = EmbedBuilder::new()
-        .author("Now playing", None, None)
+        .author(
+            if now.paused { "Paused" } else { "Now playing" },
+            None,
+            None,
+        )
         .title(truncate(&track.title))
         .url(track.url.clone())
         .color(COLOR)
-        .field("Length", track.duration_secs.map(fmt_duration).unwrap_or_else(|| "?".into()), true)
+        .field(
+            "Length",
+            track
+                .duration_secs
+                .map(fmt_duration)
+                .unwrap_or_else(|| "?".into()),
+            true,
+        )
         .field("Requested by", track.requested_by.clone(), true)
         .field("Voice", voice, true);
     if let Some(thumb) = &track.thumbnail {
         builder = builder.thumbnail(thumb.clone());
     }
 
-    let up_next = if s.upcoming.is_empty() {
+    let up_next = if s.queue.is_empty() {
         "Nothing queued. Post a link or search to add one.".to_string()
     } else {
-        let mut lines: Vec<String> = s
-            .upcoming
-            .iter()
-            .take(UP_NEXT)
+        let lines: Vec<String> = s
+            .upcoming(UP_NEXT)
             .enumerate()
             .map(|(i, t)| {
-                let mark = if i < s.upcoming_priority { PRIORITY_MARK } else { "" };
+                let mark = if i < s.upcoming_priority {
+                    PRIORITY_MARK
+                } else {
+                    ""
+                };
                 match t.duration_secs {
-                    Some(d) => format!("`{}.` {mark}[{}](<{}>) ({})", i + 1, truncate(&t.title), &t.url, fmt_duration(d)),
+                    Some(d) => format!(
+                        "`{}.` {mark}[{}](<{}>) ({})",
+                        i + 1,
+                        truncate(&t.title),
+                        t.url,
+                        fmt_duration(d)
+                    ),
                     None => format!("`{}.` {mark}{}", i + 1, truncate(&t.title)),
                 }
             })
             .collect();
-        let more = s.upcoming_total.saturating_sub(UP_NEXT);
-        if more > 0 {
-            lines.push(format!("…and {more} more"));
-        }
-        lines.join("\n")
+        fit_lines(lines, s.upcoming_total())
     };
-    builder = builder.field(format!("Up next ({})", s.upcoming_total), up_next, false);
+    builder = builder.field(format!("Up next ({})", s.upcoming_total()), up_next, false);
 
     builder
         .footer(
             format!(
                 "{} queued · {} total · {prefix}skip · {prefix}clear · {prefix}leave",
-                s.upcoming_total,
+                s.upcoming_total(),
                 fmt_duration(s.upcoming_secs)
             ),
             None,
@@ -217,17 +301,14 @@ pub fn render(s: &Snapshot, prefix: &str) -> Embed {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::NowPlaying;
+    use crate::core::{Entry, NowPlaying};
     use crate::media::Track;
     use tokio::time::Instant;
 
     fn track(title: &str) -> Track {
         Track {
-            title: title.into(),
-            url: "https://www.youtube.com/watch?v=x".into(),
-            duration_secs: Some(214),
             thumbnail: Some("https://i.ytimg.com/vi/x/hqdefault.jpg".into()),
-            requested_by: "nils".into(),
+            ..Track::test(title)
         }
     }
 
@@ -241,20 +322,57 @@ mod tests {
     #[test]
     fn playing_panel_lists_queue() {
         let snapshot = Snapshot {
-            now: Some(NowPlaying { track: track("Song"), generation: 1, offset_secs: 0, started_at: Instant::now() }),
-            upcoming: (1..=10).map(|i| track(&format!("Next {i}"))).collect(),
-            upcoming_total: 12,
+            now: Some(NowPlaying {
+                entry_id: 1,
+                track: track("Song"),
+                generation: 1,
+                offset_secs: 0,
+                started_at: Instant::now(),
+                paused: false,
+            }),
+            queue: std::sync::Arc::new(
+                (1..=12)
+                    .map(|i| Entry {
+                        id: i + 1,
+                        track: track(&format!("Next {i}")),
+                    })
+                    .collect(),
+            ),
             upcoming_priority: 1,
             upcoming_secs: 12 * 214,
             voice_channel: Some("123".into()),
+            ..Default::default()
         };
         let embed = render(&snapshot, "!");
         assert_eq!(embed.title.as_deref(), Some("Song"));
         let fields = embed.fields.unwrap();
         let up_next = fields.iter().find(|f| f.name == "Up next (12)").unwrap();
-        assert!(up_next.value.starts_with("`1.` ⏫ Next 1 (3:34)\n`2.` Next 2"));
+        assert!(up_next.value.starts_with(
+            "`1.` ⏫ [Next 1](<https://www.youtube.com/watch?v=x>) (3:34)\n`2.` [Next 2]"
+        ));
         assert!(up_next.value.ends_with("…and 2 more"));
-        assert!(fields.iter().any(|f| f.name == "Voice" && f.value == "<#123>"));
+        assert!(
+            fields
+                .iter()
+                .any(|f| f.name == "Voice" && f.value == "<#123>")
+        );
+    }
+
+    #[test]
+    fn up_next_fits_in_a_field() {
+        let lines: Vec<String> = (1..=10)
+            .map(|i| {
+                format!(
+                    "`{i}.` [{}](<http://jf.lan:8096/web/#/details?id={}>) (3:34)",
+                    "a".repeat(80),
+                    "f".repeat(32)
+                )
+            })
+            .collect();
+        let value = fit_lines(lines, 30);
+        assert!(value.chars().count() <= FIELD_MAX);
+        let shown = value.lines().count() - 1;
+        assert!(value.ends_with(&format!("…and {} more", 30 - shown)));
     }
 
     #[test]

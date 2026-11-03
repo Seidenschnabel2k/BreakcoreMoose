@@ -42,18 +42,24 @@ impl LiveKitTransport {
             CHANNELS,
             QUEUE_MS,
         );
-        let track = LocalAudioTrack::create_audio_track(
-            TRACK_NAME,
-            RtcAudioSource::Native(source.clone()),
-        );
+        let track =
+            LocalAudioTrack::create_audio_track(TRACK_NAME, RtcAudioSource::Native(source.clone()));
         participant
             .publish_track(
                 LocalTrack::Audio(track),
-                TrackPublishOptions { source: TrackSource::Microphone, ..Default::default() },
+                TrackPublishOptions {
+                    source: TrackSource::Microphone,
+                    ..Default::default()
+                },
             )
             .await?;
 
-        Ok(Self { ctx: ctx.clone(), guild_id: guild_id.to_string(), room, source })
+        Ok(Self {
+            ctx: ctx.clone(),
+            guild_id: guild_id.to_string(),
+            room,
+            source,
+        })
     }
 }
 
@@ -66,7 +72,10 @@ impl VoiceTransport for LiveKitTransport {
             num_channels: CHANNELS,
             samples_per_channel: SAMPLES_PER_CHANNEL,
         };
-        self.source.capture_frame(&frame).await.map_err(|e| anyhow!("{e:?}"))
+        self.source
+            .capture_frame(&frame)
+            .await
+            .map_err(|e| anyhow!("{e:?}"))
     }
 
     fn clear_buffer(&self) {

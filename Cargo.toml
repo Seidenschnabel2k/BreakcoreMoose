@@ -18,7 +18,7 @@ livekit-datatrack = "=0.1.8"
 livekit-protocol = "=0.7.8"
 libwebrtc = "=0.3.36"
 webrtc-sys = "=0.3.34"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "query", "form"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -27,6 +27,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 dotenvy = "0.15.7"
 rand = "0.10"
+axum = { version = "0.8", features = ["ws", "macros"] }
+axum-extra = { version = "0.12.6", features = ["cookie-private"] }
+sha2 = "0.11.1"
+base64 = "0.23.1"
+time = "0.3.55"
 
 [profile.release]
 # Debug symbols are 11 MB of the 47 MB binary.
