@@ -88,7 +88,7 @@ All settings are environment variables. The bot also reads a `.env` file from it
 | Variable | Default | Description |
 |---|---|---|
 | `YTDLP_PATH` | `yt-dlp` | yt-dlp executable (name on `PATH` or a full path). |
-| `YTDLP_COOKIES` | `cookies.txt` if it exists | A Netscape-format cookie file that is passed to every yt-dlp call as `--cookies`. Use it so yt-dlp is logged in to YouTube, which helps against "confirm you're not a bot" blocks and age-restricted videos. If you set this variable, the file must exist. If you don't, `cookies.txt` in the working directory is used when present (in Docker: `/home/bot/cookies.txt`). Without a cookie file the bot still works, only without a login. Export one from a logged-in browser with an extension, or with `yt-dlp --cookies-from-browser firefox --cookies cookies.txt`. yt-dlp writes refreshed cookies back to the file, so it must be writable. Keep it private. It's a login. |
+| `YTDLP_COOKIES` | `cookies.txt` if it exists | A Netscape-format cookie file that is passed to every yt-dlp call as `--cookies`. Use it so yt-dlp is logged in to YouTube, which helps against "confirm you're not a bot" blocks and age-restricted videos. If you set this variable, the file must exist. If you don't, `cookies.txt` in the working directory is used when present (in Docker: `/home/bot/cookies.txt`). Without a cookie file the bot still works, only without a login. |
 | `FFMPEG_PATH` | `ffmpeg` | ffmpeg executable. |
 
 ### Web player (optional)
