@@ -5,16 +5,24 @@ use std::net::IpAddr;
 use anyhow::{Context as _, Result, bail};
 use url::{Host, Url};
 
+use super::spotify;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Source {
     /// A link to any site yt-dlp handles; yt-dlp decides if it is one track
     /// or a playlist.
     Url(String),
+    /// A Spotify track, album, playlist or artist link or `spotify:` URI.
+    /// Only its metadata comes from Spotify; the audio from YouTube.
+    Spotify(String),
     Search(String),
 }
 
 pub fn classify(input: &str) -> Source {
     let input = input.trim().trim_start_matches('<').trim_end_matches('>');
+    if spotify::parse(input).is_some() || spotify::is_short_link(input) {
+        return Source::Spotify(input.to_string());
+    }
     if (input.starts_with("http://") || input.starts_with("https://"))
         && let Ok(url) = Url::parse(input)
     {
@@ -87,6 +95,17 @@ mod tests {
         ] {
             assert!(matches!(classify(link), Source::Url(_)), "{link}");
         }
+        for link in [
+            "https://open.spotify.com/track/0DiWol3AO6WpXZgp0goxAV",
+            "spotify:album:2noRn2Aes5aoNVsU6iWThc",
+            "<https://spotify.link/AbCdEf>",
+        ] {
+            assert!(matches!(classify(link), Source::Spotify(_)), "{link}");
+        }
+        assert!(matches!(
+            classify("https://open.spotify.com/show/abc"),
+            Source::Url(_)
+        ));
         assert_eq!(
             classify("daft punk one more time"),
             Source::Search("daft punk one more time".into())

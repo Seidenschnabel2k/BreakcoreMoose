@@ -857,7 +857,9 @@ async fn stream(
     volume: &AtomicU16,
     levels: &watch::Sender<Levels>,
 ) -> Result<(), String> {
-    let mut audio = AudioStream::open(config, track, offset_secs).map_err(|e| e.to_string())?;
+    let mut audio = AudioStream::open(config, track, offset_secs)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut bytes = vec![0u8; FRAME_SAMPLES * 2];
     let mut samples = vec![0i16; FRAME_SAMPLES];
     let mut frames = 0u64;

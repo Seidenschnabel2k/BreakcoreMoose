@@ -26,6 +26,9 @@ pub struct Config {
     /// The web player; `None` unless `WEB_PUBLIC_URL` is set.
     pub web: Option<WebConfig>,
     pub jellyfin: Option<JellyfinConfig>,
+    /// Web API app credentials. Without them Spotify links still work
+    /// through the public embed page.
+    pub spotify: Option<SpotifyConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +69,20 @@ impl std::fmt::Debug for JellyfinConfig {
     }
 }
 
+#[derive(Clone)]
+pub struct SpotifyConfig {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+impl std::fmt::Debug for SpotifyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpotifyConfig")
+            .field("client_id", &self.client_id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Config {
     pub async fn from_env() -> Result<Self> {
         let token = env::var("FLUXER_TOKEN").context("FLUXER_TOKEN is not set")?;
@@ -99,6 +116,7 @@ impl Config {
                 .collect(),
             web: web_config()?,
             jellyfin: jellyfin_config()?,
+            spotify: spotify_config()?,
         })
     }
 
@@ -149,6 +167,17 @@ fn jellyfin_config() -> Result<Option<JellyfinConfig>> {
         })),
         (None, None) => Ok(None),
         _ => bail!("set both JELLYFIN_URL and JELLYFIN_API_KEY, or neither"),
+    }
+}
+
+fn spotify_config() -> Result<Option<SpotifyConfig>> {
+    match (var("SPOTIFY_CLIENT_ID"), var("SPOTIFY_CLIENT_SECRET")) {
+        (Some(client_id), Some(client_secret)) => Ok(Some(SpotifyConfig {
+            client_id,
+            client_secret,
+        })),
+        (None, None) => Ok(None),
+        _ => bail!("set both SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET, or neither"),
     }
 }
 

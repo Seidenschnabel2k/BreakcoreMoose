@@ -128,6 +128,9 @@ pub async fn resolve(
             (url, false)
         }
         Source::Search(q) => (format!("ytsearch{SEARCH_RESULTS}:{q}"), true),
+        Source::Spotify(link) => {
+            return super::spotify::resolve(config, &link, playlist_skip, requested_by).await;
+        }
     };
 
     let mut command = ytdlp_command(config);
@@ -280,9 +283,13 @@ impl AudioStream {
     /// sees one) and ffmpeg decodes to 48 kHz stereo s16le.
     /// `start_secs` > 0 seeks: ffmpeg decodes and drops audio up to that
     /// point, so a seek costs only the download up to it (a few seconds).
-    pub fn open(config: &Config, track: &Track, start_secs: u64) -> Result<Self> {
+    pub async fn open(config: &Config, track: &Track, start_secs: u64) -> Result<Self> {
         match &track.stream {
             Stream::Ytdlp => Self::open_ytdlp(config, &track.url, start_secs),
+            Stream::Spotify => {
+                let url = super::spotify::youtube_url(config, track).await?;
+                Self::open_ytdlp(config, &url, start_secs)
+            }
             Stream::Jellyfin(id) => Self::open_jellyfin(config, id, start_secs),
         }
     }
@@ -410,10 +417,10 @@ fn pcm_output_args() -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn config() -> Config {
+    pub(crate) fn config() -> Config {
         Config {
             token: String::new(),
             api_url: String::new(),
@@ -427,6 +434,7 @@ mod tests {
             music_channels: Vec::new(),
             web: None,
             jellyfin: None,
+            spotify: None,
         }
     }
 
@@ -554,7 +562,7 @@ mod tests {
             "first tracks were skipped"
         );
 
-        let mut audio = AudioStream::open(&config, &r.tracks[0], 60).unwrap();
+        let mut audio = AudioStream::open(&config, &r.tracks[0], 60).await.unwrap();
         let mut second = vec![0u8; 48_000 * 2 * 2];
         tokio::time::timeout(Duration::from_secs(30), audio.pcm.read_exact(&mut second))
             .await

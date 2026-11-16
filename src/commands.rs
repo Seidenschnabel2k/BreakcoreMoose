@@ -114,7 +114,7 @@ pub fn parse_seek(arg: &str) -> Option<SeekTarget> {
 
 pub fn help(prefix: &str) -> String {
     [
-        format!("`{prefix}play <link or search>`: add a link (anything yt-dlp supports), a playlist, or a YouTube search"),
+        format!("`{prefix}play <link or search>`: add a link (anything yt-dlp supports, or Spotify), a playlist, or a YouTube search"),
         format!("`{prefix}play <playlist link> 10`: add the playlist without its first 10 tracks (works with `{prefix}next` too)"),
         format!("`{prefix}next <link or search>` (`{prefix}n`): add to the priority queue, played before the regular queue"),
         format!("`{prefix}skip`: play the next track"),

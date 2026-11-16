@@ -1,5 +1,6 @@
 pub mod jellyfin;
 pub mod source;
+pub mod spotify;
 pub mod ytdlp;
 pub mod ytmusic;
 
@@ -26,6 +27,9 @@ pub enum Stream {
     Ytdlp,
     /// ffmpeg reads this item straight from the configured Jellyfin server.
     Jellyfin(String),
+    /// `Track::url` is a Spotify track; a YouTube match is searched when it
+    /// starts and yt-dlp plays that.
+    Spotify,
 }
 
 #[cfg(test)]

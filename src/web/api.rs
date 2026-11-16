@@ -202,7 +202,7 @@ pub async fn jellyfin_tracks(
         .map(|t| {
             let id = match &t.stream {
                 crate::media::Stream::Jellyfin(id) => Some(id.clone()),
-                crate::media::Stream::Ytdlp => None,
+                crate::media::Stream::Ytdlp | crate::media::Stream::Spotify => None,
             };
             Row {
                 token: None,

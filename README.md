@@ -3,6 +3,7 @@
 A music bot for self-hosted [Fluxer](https://fluxer.app) instances. It's one Rust binary that runs the chat bot, the audio player and an optional web player, so chat commands and the web page always edit the same queue.
 
 - Plays anything [yt-dlp](https://github.com/yt-dlp/yt-dlp) supports: single tracks, playlists and YouTube searches. Audio is streamed and never written to disk.
+- Plays **Spotify** track, album, playlist and artist links by matching each track to YouTube.
 - Has a priority queue (`!next`), seek, pause, shuffle, loop and a volume control that takes effect right away.
 - Can keep a **music channel** with a live now-playing panel. Anything posted there without the prefix gets played.
 - Has a **web player** styled like a late-90s desktop media player. It has a playlist editor with drag-and-drop, plus search over YouTube Music, SoundCloud and (optionally) **Jellyfin**. Login goes through Fluxer OAuth2.
@@ -127,6 +128,17 @@ Adds a Jellyfin tab to the web player's search window (songs, albums, playlists,
 | `JELLYFIN_API_KEY` | – | An API key, created in Jellyfin under *Dashboard → API Keys*. |
 | `JELLYFIN_USER` | first administrator | Name of the Jellyfin user whose library and playlists are shown. |
 
+### Spotify (optional)
+
+Spotify links (tracks, albums, playlists, artists, `spotify:` URIs and `spotify.link` short links) work without any setup. Spotify only supplies the metadata. Each track is matched to YouTube when it starts: a YouTube Music song search for "artists - title", else a plain YouTube search. The best-ranked hit within 7 seconds of Spotify's duration wins, else the top hit. Matches are kept in memory until restart.
+
+Without credentials, the bot reads Spotify's public embed page, which lists at most about 100 tracks of a playlist. With credentials, it uses the Web API for tracks and albums. Since February 2026 the API no longer lists playlist tracks for apps and has no artist top tracks, so playlist contents and an artist's top 10 still come from the embed page. Spotify also requires the app owner to have Premium for apps in development mode. If the API refuses, the bot falls back to the embed page. Set both variables or neither.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SPOTIFY_CLIENT_ID` | – | Client ID of an app created at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard). No redirect URI or user login is needed. |
+| `SPOTIFY_CLIENT_SECRET` | – | Its client secret. |
+
 ### Logging
 
 | Variable | Default | Description |
@@ -148,6 +160,9 @@ WEB_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
 JELLYFIN_URL=http://jellyfin.lan:8096
 JELLYFIN_API_KEY=...
+
+SPOTIFY_CLIENT_ID=...
+SPOTIFY_CLIENT_SECRET=...
 ```
 
 ## Commands
@@ -156,8 +171,8 @@ With the default prefix `!`:
 
 | Command | Description |
 |---|---|
-| `!play <link or search>` (`!p`) | Add a link (anything yt-dlp supports), a playlist, or the first YouTube search result. |
-| `!play <playlist link> 10` | Add the playlist without its first 10 tracks. Works with `!next` too. |
+| `!play <link or search>` (`!p`) | Add a link (anything yt-dlp supports, or Spotify), a playlist, or the first YouTube search result. |
+| `!play <playlist link> 10` | Add the playlist without its first 10 tracks. Works with `!next` and Spotify albums, playlists and artists too. |
 | `!next <link or search>` (`!n`) | Add to the priority queue, which plays before the regular queue. |
 | `!skip` (`!s`) | Play the next track. |
 | `!seek <time>` | Jump to a time (`1:30`, `90`, `1:02:03`) or move by `+30` / `-15`. |
